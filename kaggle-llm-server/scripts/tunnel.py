@@ -47,9 +47,10 @@ def start_cloudflared(port: int, log_path: str = "./logs/tunnel.log"):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_f = open(log_path, "w")
     proc = subprocess.Popen(
-        [binary, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
+        [binary, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
         stdout=log_f,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
     url = _wait_for_url(log_path, CLOUDFLARED_URL_RE)
     return proc, url
@@ -62,10 +63,11 @@ def start_pinggy(port: int, log_path: str = "./logs/tunnel.log"):
         [
             "ssh", "-p", "443", "-o", "StrictHostKeyChecking=no",
             "-o", "ServerAliveInterval=30",
-            "-R", f"0:localhost:{port}", "a.pinggy.io",
+            "-R", f"0:127.0.0.1:{port}", "a.pinggy.io",
         ],
         stdout=log_f,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
     url = _wait_for_url(log_path, PINGGY_URL_RE)
     return proc, url
@@ -79,6 +81,7 @@ def start_localtunnel(port: int, log_path: str = "./logs/tunnel.log"):
         ["lt", "--port", str(port)],
         stdout=log_f,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
     url = _wait_for_url(log_path, LOCALTUNNEL_URL_RE)
     return proc, url
@@ -98,6 +101,7 @@ def start_ngrok(port: int, log_path: str = "./logs/tunnel.log"):
         ["ngrok", "http", str(port), "--log=stdout"],
         stdout=log_f,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
     for _ in range(30):
         time.sleep(1)
