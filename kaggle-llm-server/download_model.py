@@ -28,6 +28,22 @@ import sys
 import yaml
 from tqdm import tqdm
 
+# Настраиваем директорию кэша Hugging Face на Kaggle, чтобы избежать переполнения диска /root
+if os.path.exists("/kaggle/working"):
+    os.environ["HF_HOME"] = "/kaggle/working/.cache/huggingface"
+
+# Пытаемся автоматически подгрузить HF_TOKEN из секретов Kaggle, если его нет в окружении
+if "HF_TOKEN" not in os.environ:
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        token = user_secrets.get_secret("HF_TOKEN")
+        if token:
+            os.environ["HF_TOKEN"] = token
+            print("[download] Успешно загружен HF_TOKEN из Kaggle Secrets.")
+    except Exception:
+        pass
+
 
 def load_config(path="config.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -55,6 +71,7 @@ def download_from_huggingface(cfg: dict, filename: str = None) -> str:
         filename=filename,
         local_dir=m["local_dir"],
         token=token,
+        local_dir_use_symlinks=False,
     )
     return path
 
