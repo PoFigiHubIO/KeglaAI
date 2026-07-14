@@ -65,6 +65,14 @@ WEBUI_MCP_PROXY=$(read_yaml webui_mcp_proxy)
 
 mkdir -p logs
 
+# --- Очистка старых процессов перед запуском ---
+log "Очистка старых процессов llama-server и туннелей..."
+pkill -f llama-server 2>/dev/null || true
+pkill -f cloudflared 2>/dev/null || true
+pkill -f localtunnel 2>/dev/null || true
+pkill -f ngrok 2>/dev/null || true
+sleep 1
+
 # --- Проверка поддерживаемых флагов через --help собранного бинарника ---
 # llama.cpp — быстро развивающийся проект, CLI-флаги переименовываются/
 # убираются между версиями (build.sh всегда собирает актуальный master).
