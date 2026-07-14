@@ -51,13 +51,9 @@ def patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     return orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 socket.getaddrinfo = patched_getaddrinfo
 
-# Включаем hf-transfer для многопоточного скачивания на Rust (если установлен)
-try:
-    import hf_transfer
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    print("[download] Включен высокоскоростной Rust-бэкенд скачивания (hf-transfer).")
-except ImportError:
-    pass
+# Принудительно отключаем hf-transfer. Многопоточные запросы с общего IP Kaggle
+# часто вызывают блокировки и жесткий троттлинг от Cloudflare CDN на Hugging Face.
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 
 def load_config(path="config.yaml") -> dict:
