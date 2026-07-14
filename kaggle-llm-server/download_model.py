@@ -136,12 +136,83 @@ def download_from_direct_url(cfg: dict, url: str = None, filename: str = None) -
     return out_path
 
 
-def already_cached(local_dir: str, filename: str) -> str | None:
+def get_remote_file_size(cfg: dict, source: str, filename: str = None) -> int | None:
+    m = cfg["model"]
+    filename = filename or m.get("filename")
+    if not filename:
+        return None
+
+    if source == "huggingface":
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            token = os.environ.get(m.get("hf_token_env", "HF_TOKEN"), None)
+            info = api.model_info(repo_id=m["repo_id"], token=token)
+            for sibling in info.siblings:
+                if sibling.rfilename == filename:
+                    if hasattr(sibling, "size") and sibling.size:
+                        return sibling.size
+            # Fallback to direct head request
+            from huggingface_hub import hf_hub_url
+            import requests
+            url = hf_hub_url(repo_id=m["repo_id"], filename=filename)
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            with requests.get(url, headers=headers, stream=True, timeout=10) as r:
+                if "content-length" in r.headers:
+                    return int(r.headers["content-length"])
+        except Exception:
+            pass
+    elif source == "gdrive":
+        import requests
+        file_id = m.get("gdrive_file_id")
+        if filename == m.get("mmproj_filename"):
+            file_id = m.get("mmproj_gdrive_file_id")
+        if not file_id:
+            return None
+        try:
+            url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+            with requests.get(url, stream=True, timeout=10) as r:
+                if "content-length" in r.headers:
+                    val = int(r.headers["content-length"])
+                    if val > 10 * 1024 * 1024:
+                        return val
+        except Exception:
+            pass
+    elif source == "direct_url":
+        import requests
+        url = m.get("direct_url")
+        if filename == m.get("mmproj_filename"):
+            url = m.get("mmproj_direct_url")
+        if not url:
+            return None
+        try:
+            with requests.get(url, stream=True, timeout=10) as r:
+                if "content-length" in r.headers:
+                    return int(r.headers["content-length"])
+        except Exception:
+            pass
+    return None
+
+
+def already_cached(local_dir: str, filename: str, expected_size: int = None) -> str | None:
     if not filename:
         return None
     candidate = os.path.join(local_dir, filename)
-    if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
-        return candidate
+    if os.path.exists(candidate):
+        size = os.path.getsize(candidate)
+        if expected_size is not None:
+            if size == expected_size:
+                return candidate
+            else:
+                print(f"[download] Файл {candidate} поврежден или не докачан (размер: {size}, ожидалось: {expected_size}). Удаляем и скачиваем заново.")
+                try:
+                    os.remove(candidate)
+                except Exception as e:
+                    print(f"[download][error] Не удалось удалить поврежденный файл: {e}")
+        elif size > 0:
+            return candidate
     return None
 
 
@@ -149,7 +220,8 @@ def download_file(cfg: dict, source: str, filename: str) -> str:
     """Скачивает произвольный файл (основную модель или mmproj) выбранным
     источником, с переиспользованием той же логики кэширования."""
     m = cfg["model"]
-    cached = already_cached(m["local_dir"], filename)
+    expected_size = get_remote_file_size(cfg, source, filename)
+    cached = already_cached(m["local_dir"], filename, expected_size)
     if cached:
         print(f"[download] Уже есть в кэше: {cached} (пропускаем)")
         return cached
@@ -194,7 +266,9 @@ def main():
     m = cfg["model"]
     os.makedirs(m["local_dir"], exist_ok=True)
 
-    cached = already_cached(m["local_dir"], m.get("filename"))
+    source = m.get("source", "huggingface")
+    expected_size = get_remote_file_size(cfg, source, m.get("filename"))
+    cached = already_cached(m["local_dir"], m.get("filename"), expected_size)
     if cached:
         print(f"[download] Модель уже есть в кэше: {cached} (пропускаем скачивание)")
         model_path = cached
