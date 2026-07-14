@@ -140,7 +140,13 @@ ARGS=(
 # --- Flash Attention: в разных версиях llama.cpp это то булев флаг
 # (--flash-attn), то флаг со значением (--flash-attn on|off|auto).
 # Определяем по тексту --help, что ожидает конкретно эта сборка.
-if echo "$HELP_OUTPUT" | grep -A 2 -i "flash-attn" | grep -qE "(on|off|auto|FA_TYPE)"; then
+FLASH_ATTN_VAL=$(python3 -c '
+import sys, re
+help_text = sys.stdin.read().lower()
+print("on" if re.search(r"--flash-attn\b.*?\b(on|off|auto|fa_type)\b", help_text) else "")
+' <<< "$HELP_OUTPUT")
+
+if [[ "$FLASH_ATTN_VAL" == "on" ]]; then
     ARGS+=(--flash-attn on)
 elif flag_supported "--flash-attn"; then
     ARGS+=(--flash-attn)
