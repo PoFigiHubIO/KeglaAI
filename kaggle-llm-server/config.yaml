@@ -38,7 +38,7 @@ server:
   mlock: false
   tensor_split: auto
   split_mode: layer
-  parallel: 4
+  parallel: 1
   cont_batching: true
   rope_scaling: none
   rope_freq_base: 0
