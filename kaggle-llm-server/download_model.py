@@ -157,16 +157,21 @@ def download_file(cfg: dict, source: str, filename: str) -> str:
     if source == "huggingface":
         return download_from_huggingface(cfg, filename=filename)
     elif source == "gdrive":
-        raise ValueError(
-            "Для mmproj-файла с источником gdrive укажите отдельный "
-            "model.mmproj_gdrive_file_id — автоматическое определение "
-            "второго файла по одному gdrive_file_id невозможно."
-        )
+        file_id = m.get("mmproj_gdrive_file_id")
+        if not file_id:
+            raise ValueError(
+                "Для mmproj-файла с источником gdrive укажите отдельный "
+                "model.mmproj_gdrive_file_id в config.yaml"
+            )
+        return download_from_gdrive(cfg, file_id=file_id, filename=filename)
     elif source == "direct_url":
-        raise ValueError(
-            "Для mmproj-файла с источником direct_url укажите отдельный "
-            "model.mmproj_direct_url."
-        )
+        url = m.get("mmproj_direct_url")
+        if not url:
+            raise ValueError(
+                "Для mmproj-файла с источником direct_url укажите отдельный "
+                "model.mmproj_direct_url в config.yaml"
+            )
+        return download_from_direct_url(cfg, url=url, filename=filename)
     else:
         raise ValueError(f"Неизвестный источник модели: {source}")
 

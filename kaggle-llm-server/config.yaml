@@ -1,9 +1,9 @@
 model:
-  source: huggingface
+  source: gdrive
   repo_id: HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive
   filename: Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf
   direct_url: ''
-  gdrive_file_id: ''
+  gdrive_file_id: '1uhyPhimt7FzXYkbrnzQqiEl5CdJgEKoO'
   hf_token_env: HF_TOKEN
   local_dir: ./models
   verify_sha256: false
@@ -11,6 +11,7 @@ model:
   mmproj_enabled: true
   mmproj_filename: mmproj-Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-f16.gguf
   mmproj_sha256: ''
+  mmproj_gdrive_file_id: '169SqDbP2RATA70frICfx-LRfnw5T6_MC'
 llama_cpp:
   repo_url: https://github.com/ggml-org/llama.cpp.git
   branch: master
