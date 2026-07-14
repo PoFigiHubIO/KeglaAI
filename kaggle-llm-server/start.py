@@ -133,6 +133,18 @@ def generate_vscode_configs(public_url: str, cfg: dict):
     api_base = f"{public_url}/v1"
     api_key = cfg["server"].get("api_key") or "sk-no-key-required"
 
+    # Читаем реальное имя модели из optimized_params.json
+    model_name = "local-model"
+    params_json = "./logs/optimized_params.json"
+    if os.path.exists(params_json):
+        try:
+            with open(params_json, "r", encoding="utf-8") as f:
+                params = json.load(f)
+                if "model_path" in params:
+                    model_name = params["model_path"]
+        except Exception:
+            pass
+
     templates = {
         "continue_config.json": ("vscode/continue_config.json", "vscode/generated/continue_config.json"),
         "cline_config.json": ("vscode/cline_config.json", "vscode/generated/cline_config.json"),
@@ -146,7 +158,7 @@ def generate_vscode_configs(public_url: str, cfg: dict):
         content = content.replace("https://PUBLIC_URL/v1", api_base).replace(
             "sk-no-key-required" if api_key == "sk-no-key-required" else "__API_KEY__",
             api_key,
-        )
+        ).replace("local-model", model_name)
         with open(dst, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"[start.py] Сгенерирован {dst}")

@@ -5,7 +5,7 @@
   "openAiApiKey": "sk-no-key-required",
   "openAiModelId": "local-model",
   "openAiCustomModelInfo": {
-    "contextWindow": 8192,
+    "contextWindow": 32768,
     "supportsImages": false,
     "supportsPromptCache": false
   }

@@ -7,7 +7,7 @@
       "model": "local-model",
       "apiBase": "https://PUBLIC_URL/v1",
       "apiKey": "sk-no-key-required",
-      "contextLength": 8192
+      "contextLength": 32768
     }
   ],
   "tabAutocompleteModel": {
