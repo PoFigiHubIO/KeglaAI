@@ -35,7 +35,7 @@ import sys
 
 VRAM_RESERVE_MB_PER_GPU = 1200   # буфер под CUDA context / graph
 DEFAULT_CTX_MIN = 4096
-DEFAULT_CTX_MAX = 32768
+DEFAULT_CTX_MAX = 65536
 BYTES_PER_TOKEN_KV_Q8 = 0.5      # приблизительно, зависит от arch/n_layer/n_head — грубая эвристика
 
 
