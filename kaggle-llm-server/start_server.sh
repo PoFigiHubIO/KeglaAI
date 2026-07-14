@@ -185,6 +185,11 @@ else
     log "API-key защита: выключена (server.api_key пуст в config.yaml)"
 fi
 
+if [[ "$TENSOR_SPLIT" == "1" ]]; then
+    log "Модель полностью помещается в VRAM одного GPU. Отключаем мульти-GPU для стабильности и скорости (CUDA_VISIBLE_DEVICES=0)."
+    export CUDA_VISIBLE_DEVICES=0
+fi
+
 log "Запуск llama-server..."
 log "Команда: $LLAMA_BIN ${ARGS[*]}"
 
@@ -201,6 +206,11 @@ for i in $(seq 1 60); do
         log "Web UI:  http://127.0.0.1:${PORT}/"
         log "API:     http://127.0.0.1:${PORT}/v1/chat/completions"
         exit 0
+    fi
+    # Проверяем, не упал ли процесс сервера
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        err "Процесс llama-server (PID=$SERVER_PID) скоропостижно скончался."
+        break
     fi
     sleep 2
 done

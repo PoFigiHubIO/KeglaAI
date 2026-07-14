@@ -68,20 +68,34 @@ def guess_model_layers_and_size(model_path: str):
 def compute_params(hw: dict, model_path: str, cfg_server: dict) -> dict:
     gpus = hw.get("gpus", [])
     gpu_count = max(1, len(gpus))
-    total_free_mb = sum(g["free_memory_mb"] for g in gpus) if gpus else 0
-    usable_vram_mb = max(0, total_free_mb - VRAM_RESERVE_MB_PER_GPU * gpu_count)
+    size_mb, n_layers = guess_model_layers_and_size(model_path)
 
     # Если модель мультимодальная и mmproj был скачан — его тоже грузят в
     # VRAM (обычно на первый GPU), резервируем под него место заранее.
+    mmproj_mb = 0
     mmproj_path_file = "./logs/mmproj_path.txt"
     if os.path.exists(mmproj_path_file):
         with open(mmproj_path_file, "r", encoding="utf-8") as f:
             mmproj_path = f.read().strip()
         if mmproj_path and os.path.exists(mmproj_path):
             mmproj_mb = os.path.getsize(mmproj_path) / (1024 * 1024)
-            usable_vram_mb = max(0, usable_vram_mb - mmproj_mb)
 
-    size_mb, n_layers = guess_model_layers_and_size(model_path)
+    # Эвристика: определяем, поместится ли модель целиком на один GPU (GPU 0)
+    # Резервируем VRAM под саму модель, mmproj и гипотетический максимальный KV cache (~2.5 GB)
+    estimated_kv_mb = 2560
+    use_single_gpu = False
+    if gpus and len(gpus) > 1:
+        single_gpu_usable = gpus[0]["free_memory_mb"] - VRAM_RESERVE_MB_PER_GPU
+        if size_mb + mmproj_mb + estimated_kv_mb < single_gpu_usable:
+            use_single_gpu = True
+
+    if use_single_gpu:
+        gpu_count = 1
+        total_free_mb = gpus[0]["free_memory_mb"]
+    else:
+        total_free_mb = sum(g["free_memory_mb"] for g in gpus) if gpus else 0
+
+    usable_vram_mb = max(0, total_free_mb - VRAM_RESERVE_MB_PER_GPU * gpu_count - mmproj_mb)
 
     # --- n_gpu_layers ---
     if n_layers and size_mb > 0:
@@ -125,7 +139,9 @@ def compute_params(hw: dict, model_path: str, cfg_server: dict) -> dict:
     threads_batch = logical
 
     # --- tensor_split ---
-    if gpus and len(gpus) > 1:
+    if use_single_gpu:
+        tensor_split = "1"
+    elif gpus and len(gpus) > 1:
         frees = [g["free_memory_mb"] for g in gpus]
         total = sum(frees) or 1
         ratios = [round(f / total, 3) for f in frees]
