@@ -153,6 +153,31 @@ if try_restore_prebuilt; then
     exit 0
 fi
 
+# Исправление для CMake CUDAToolkit: на Kaggle часто отсутствует dev-симлинк libcuda.so
+log "Проверка наличия dev-симлинка libcuda.so для CMake..."
+if ! find /usr/lib /usr/local/lib -name "libcuda.so" 2>/dev/null | grep -q "libcuda.so"; then
+    log "libcuda.so не найден в стандартных путях поиска линковщика."
+    # Ищем libcuda.so.1
+    LIBCUDA_1=$(find /usr/lib -name "libcuda.so.1" 2>/dev/null | head -n 1)
+    if [[ -n "$LIBCUDA_1" ]]; then
+        DIR=$(dirname "$LIBCUDA_1")
+        log "Найден libcuda.so.1 в $DIR. Создаём симлинк libcuda.so..."
+        sudo ln -sf libcuda.so.1 "$DIR/libcuda.so"
+    else
+        # fallback: пробуем найти stubs в CUDA
+        STUB_CUDA=$(find /usr/local/cuda* -name "libcuda.so" 2>/dev/null | head -n 1)
+        if [[ -n "$STUB_CUDA" ]]; then
+            log "Найден stub libcuda.so в $STUB_CUDA. Создаём симлинк в /usr/lib/x86_64-linux-gnu/..."
+            sudo mkdir -p /usr/lib/x86_64-linux-gnu
+            sudo ln -sf "$STUB_CUDA" /usr/lib/x86_64-linux-gnu/libcuda.so
+        else
+            warn "Ни libcuda.so.1, ни stub libcuda.so не найдены. Сборка llama.cpp может дать сбой."
+        fi
+    fi
+else
+    log "libcuda.so найден, всё в порядке."
+fi
+
 # =============================================================================
 # Шаг 1-4: полная сборка с нуля (обычный путь)
 # =============================================================================
