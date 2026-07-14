@@ -1,0 +1,14 @@
+{
+  "//": "Этап 10. Настройки Cline через UI: API Provider = 'OpenAI Compatible'. Значения ниже вводятся вручную в панель настроек Cline (Settings gear icon).",
+  "apiProvider": "openai",
+  "openAiBaseUrl": "https://PUBLIC_URL/v1",
+  "openAiApiKey": "sk-no-key-required",
+  "openAiModelId": "local-model",
+  "notes": [
+    "Откройте VS Code -> Cline -> Settings (шестерёнка).",
+    "API Provider: 'OpenAI Compatible'.",
+    "Base URL: подставьте PUBLIC_URL из вывода start.py (Cloudflare Tunnel).",
+    "API Key: любое непустое значение, если server.api_key в config.yaml пуст.",
+    "Model: local-model (или имя файла модели, /v1/models покажет доступные)."
+  ]
+}

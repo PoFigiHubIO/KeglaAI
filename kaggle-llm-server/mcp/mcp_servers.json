@@ -1,0 +1,37 @@
+{
+  "//": "Этап 9. MCP (Model Context Protocol). Современный llama.cpp WebUI (начиная с версий 2024-2025)",
+  "//1": "умеет подключать внешние MCP-серверы прямо из настроек чата (значок 'MCP Servers' в WebUI),",
+  "//2": "либо через клиентов уровня приложения (Claude Desktop, Continue, кастомные агенты),",
+  "//3": "которые используют OpenAI-compatible API llama-server как 'мозг' и дергают инструменты сами.",
+  "//4": "Ниже — стандартный формат mcpServers, совместимый с большинством MCP-клиентов.",
+
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/kaggle/working"],
+      "description": "Доступ к файлам проекта (models/, logs/, конфиги) — чтение/запись."
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "description": "Инструмент для HTTP-запросов / скачивания веб-страниц моделью."
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "description": "Простое key-value хранилище памяти между сообщениями агента."
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Инструмент пошагового рассуждения для agent loop."
+    }
+  },
+
+  "agent_loop": {
+    "enabled": true,
+    "max_iterations": 8,
+    "tool_choice": "auto",
+    "notes": "llama-server поддерживает function calling (--jinja + чат-шаблон модели с поддержкой tools). Для полноценного agent loop используйте клиент (Continue/Cline/кастомный Python-скрипт), который: 1) шлёт запрос в /v1/chat/completions с полем tools, 2) получает tool_calls, 3) выполняет соответствующий MCP-инструмент, 4) отправляет результат обратно как role=tool, 5) повторяет цикл до финального ответа."
+  }
+}

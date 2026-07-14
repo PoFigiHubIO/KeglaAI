@@ -1,0 +1,21 @@
+{
+  "//": "Этап 10. Файл для ~/.continue/config.json. Замените PUBLIC_URL на ссылку, которую выводит start.py после запуска туннеля (например https://xxxx.trycloudflare.com).",
+  "models": [
+    {
+      "title": "Kaggle T4x2 (llama.cpp)",
+      "provider": "openai",
+      "model": "local-model",
+      "apiBase": "https://PUBLIC_URL/v1",
+      "apiKey": "sk-no-key-required",
+      "contextLength": 8192
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Kaggle T4x2 (autocomplete)",
+    "provider": "openai",
+    "model": "local-model",
+    "apiBase": "https://PUBLIC_URL/v1",
+    "apiKey": "sk-no-key-required"
+  },
+  "allowAnonymousTelemetry": false
+}

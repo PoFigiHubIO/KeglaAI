@@ -1,0 +1,12 @@
+{
+  "//": "Этап 10. Roo Code: Settings -> Providers -> добавить 'OpenAI Compatible'.",
+  "apiProvider": "openai",
+  "openAiBaseUrl": "https://PUBLIC_URL/v1",
+  "openAiApiKey": "sk-no-key-required",
+  "openAiModelId": "local-model",
+  "openAiCustomModelInfo": {
+    "contextWindow": 8192,
+    "supportsImages": false,
+    "supportsPromptCache": false
+  }
+}

@@ -1,0 +1,11 @@
+# Kaggle runtime files and large artifacts
+models/*.gguf
+models/*.part
+logs/*
+!logs/.gitkeep
+llama.cpp/
+prebuilt/
+download_me/
+__pycache__/
+*.py[cod]
+.vscode/
