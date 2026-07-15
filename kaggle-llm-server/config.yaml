@@ -47,7 +47,8 @@ server:
   cache_type_v: q8_0
   log_file: ./logs/llama-server.log
 tunnel:
-  provider: cloudflared
+  # provider: cloudflared
+  provider: ngrok
   ngrok_token_env: NGROK_AUTHTOKEN
   ngrok_domain: ''         # Бесплатный статический домен Ngrok (например, name.ngrok-free.app)
   cloudflare_token: ''     # Токен вашего постоянного Cloudflare Tunnel
