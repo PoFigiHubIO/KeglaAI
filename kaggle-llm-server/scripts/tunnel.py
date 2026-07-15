@@ -30,14 +30,13 @@ NGROK_API = "http://127.0.0.1:4040/api/tunnels"
 def _ensure_cloudflared() -> str:
     """Скачивает статический бинарник cloudflared, если его ещё нет."""
     binary = "./bin/cloudflared"
-    if os.path.exists(binary):
-        return binary
-    os.makedirs("./bin", exist_ok=True)
-    url = (
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/"
-        "cloudflared-linux-amd64"
-    )
-    subprocess.run(["wget", "-q", "-O", binary, url], check=True)
+    if not os.path.exists(binary):
+        os.makedirs("./bin", exist_ok=True)
+        url = (
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+            "cloudflared-linux-amd64"
+        )
+        subprocess.run(["wget", "-q", "-O", binary, url], check=True)
     os.chmod(binary, 0o755)
     return binary
 
