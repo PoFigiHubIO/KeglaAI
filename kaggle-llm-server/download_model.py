@@ -56,7 +56,9 @@ socket.getaddrinfo = patched_getaddrinfo
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 
-def load_config(path="config.yaml") -> dict:
+def load_config(path=None) -> dict:
+    if path is None:
+        path = os.environ.get("CONFIG_FILE", "config.yaml")
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 

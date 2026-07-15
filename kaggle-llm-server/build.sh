@@ -58,7 +58,7 @@ PREBUILT_OUT_DIR="/kaggle/working/prebuilt"
 # Шаг 0: попытка восстановить готовую сборку вместо компиляции с нуля
 # =============================================================================
 read_config_yaml() {
-    python3 -c "import yaml; d=yaml.safe_load(open('config.yaml')); print(d.get('llama_cpp',{}).get('$1','') or '')" 2>/dev/null || true
+    python3 -c "import yaml, os; d=yaml.safe_load(open(os.environ.get('CONFIG_FILE', 'config.yaml'))); print(d.get('llama_cpp',{}).get('$1','') or '')" 2>/dev/null || true
 }
 
 maybe_download_from_gdrive() {

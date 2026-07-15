@@ -49,6 +49,9 @@ server:
 tunnel:
   provider: cloudflared
   ngrok_token_env: NGROK_AUTHTOKEN
+  ngrok_domain: ''         # Бесплатный статический домен Ngrok (например, name.ngrok-free.app)
+  cloudflare_token: ''     # Токен вашего постоянного Cloudflare Tunnel
+  cloudflare_domain: ''    # Ваш домен (например, kaggle.my-domain.com), привязанный к токену
 mcp:
   enabled: true
   config_file: ./mcp/mcp_servers.json

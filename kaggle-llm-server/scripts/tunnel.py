@@ -41,17 +41,24 @@ def _ensure_cloudflared() -> str:
     return binary
 
 
-def start_cloudflared(port: int, log_path: str = "./logs/tunnel.log"):
+def start_cloudflared(port: int, log_path: str = "./logs/tunnel.log", token: str = "", domain: str = ""):
     binary = _ensure_cloudflared()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_f = open(log_path, "w")
+    if token:
+        cmd = [binary, "tunnel", "--no-autoupdate", "run", "--token", token]
+        url = domain if domain else "https://your-custom-cloudflare-domain.com"
+    else:
+        cmd = [binary, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"]
+        
     proc = subprocess.Popen(
-        [binary, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
+        cmd,
         stdout=log_f,
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    url = _wait_for_url(log_path, CLOUDFLARED_URL_RE)
+    if not token:
+        url = _wait_for_url(log_path, CLOUDFLARED_URL_RE)
     return proc, url
 
 
@@ -86,7 +93,7 @@ def start_localtunnel(port: int, log_path: str = "./logs/tunnel.log"):
     return proc, url
 
 
-def start_ngrok(port: int, log_path: str = "./logs/tunnel.log"):
+def start_ngrok(port: int, log_path: str = "./logs/tunnel.log", domain: str = ""):
     import json as _json
     import urllib.request
 
@@ -96,8 +103,13 @@ def start_ngrok(port: int, log_path: str = "./logs/tunnel.log"):
     subprocess.run(["ngrok", "config", "add-authtoken", token], check=False)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_f = open(log_path, "w")
+    
+    cmd = ["ngrok", "http", str(port), "--log=stdout"]
+    if domain:
+        cmd.extend(["--domain", domain])
+        
     proc = subprocess.Popen(
-        ["ngrok", "http", str(port), "--log=stdout"],
+        cmd,
         stdout=log_f,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -129,16 +141,17 @@ def _wait_for_url(log_path: str, pattern: re.Pattern, timeout: int = 45):
     return None
 
 
-def start_tunnel(provider: str, port: int):
+def start_tunnel(provider: str, port: int, cloudflare_token: str = "", cloudflare_domain: str = "", ngrok_domain: str = ""):
     provider = provider.lower()
+    log_path = f"./logs/tunnel_{port}.log"
     if provider == "cloudflared":
-        return start_cloudflared(port)
+        return start_cloudflared(port, log_path, cloudflare_token, cloudflare_domain)
     if provider == "pinggy":
-        return start_pinggy(port)
+        return start_pinggy(port, log_path)
     if provider == "localtunnel":
-        return start_localtunnel(port)
+        return start_localtunnel(port, log_path)
     if provider == "ngrok":
-        return start_ngrok(port)
+        return start_ngrok(port, log_path, ngrok_domain)
     raise ValueError(f"Неизвестный провайдер туннеля: {provider}")
 
 

@@ -15,12 +15,18 @@ set -euo pipefail
 log()  { echo -e "\033[1;36m[server]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[server][error]\033[0m $*" >&2; }
 
-PARAMS_JSON="./logs/optimized_params.json"
-CONFIG_YAML="./config.yaml"
+CONFIG_YAML="${CONFIG_FILE:-./config.yaml}"
 LLAMA_BIN="./llama.cpp/build/bin/llama-server"
 
+read_yaml() {
+    python3 -c "import yaml; d=yaml.safe_load(open('$CONFIG_YAML')); print(d['server'].get('$1',''))"
+}
+
+PORT=$(read_yaml port)
+PARAMS_JSON="./logs/optimized_params_${PORT}.json"
+
 if [[ ! -f "$PARAMS_JSON" ]]; then
-    err "$PARAMS_JSON не найден. Сначала выполните: python scripts/optimize.py"
+    err "$PARAMS_JSON не найден. Сначала выполните: CONFIG_FILE=$CONFIG_YAML python scripts/optimize.py"
     exit 1
 fi
 
@@ -40,9 +46,6 @@ fi
 # --- Читаем JSON через python (без внешних зависимостей типа jq) ---
 read_json() {
     python3 -c "import json,sys; d=json.load(open('$PARAMS_JSON')); print(d.get('$1',''))"
-}
-read_yaml() {
-    python3 -c "import yaml; d=yaml.safe_load(open('$CONFIG_YAML')); print(d['server'].get('$1',''))"
 }
 
 MODEL_PATH=$(read_json model_path)
@@ -65,13 +68,21 @@ WEBUI_MCP_PROXY=$(read_yaml webui_mcp_proxy)
 
 mkdir -p logs
 
-# --- Очистка старых процессов перед запуском ---
-log "Очистка старых процессов llama-server и туннелей..."
-pkill -f llama-server 2>/dev/null || true
-pkill -f cloudflared 2>/dev/null || true
-pkill -f localtunnel 2>/dev/null || true
-pkill -f ngrok 2>/dev/null || true
-sleep 1
+# --- Очистка старого процесса на этом порту перед запуском ---
+PID_FILE="logs/llama-server_${PORT}.pid"
+if [[ -f "$PID_FILE" ]]; then
+    OLD_PID=$(cat "$PID_FILE")
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        log "Останавливаем старый сервер llama-server (PID=$OLD_PID) на порту $PORT..."
+        kill "$OLD_PID" || kill -9 "$OLD_PID" 2>/dev/null || true
+        sleep 1
+    fi
+fi
+# Дополнительно освобождаем порт на случай зависания процесса
+if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+    sleep 1
+fi
 
 # --- Проверка поддерживаемых флагов через --help собранного бинарника ---
 # llama.cpp — быстро развивающийся проект, CLI-флаги переименовываются/
@@ -201,9 +212,9 @@ fi
 log "Запуск llama-server..."
 log "Команда: $LLAMA_BIN ${ARGS[*]}"
 
-nohup "$LLAMA_BIN" "${ARGS[@]}" > logs/llama-server.log 2>&1 &
+nohup "$LLAMA_BIN" "${ARGS[@]}" > "logs/llama-server_${PORT}.log" 2>&1 &
 SERVER_PID=$!
-echo "$SERVER_PID" > logs/llama-server.pid
+echo "$SERVER_PID" > "logs/llama-server_${PORT}.pid"
 
 log "llama-server запущен, PID=$SERVER_PID"
 log "Ожидание готовности сервера..."
@@ -223,6 +234,6 @@ for i in $(seq 1 60); do
     sleep 2
 done
 
-err "Сервер не ответил на /health за 120 секунд. Смотрите logs/llama-server.log"
-tail -n 50 logs/llama-server.log
+err "Сервер не ответил на /health за 120 секунд. Смотрите logs/llama-server_${PORT}.log"
+tail -n 50 "logs/llama-server_${PORT}.log"
 exit 1

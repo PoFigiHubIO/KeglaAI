@@ -174,7 +174,8 @@ def compute_params(hw: dict, model_path: str, cfg_server: dict) -> dict:
 def main():
     import yaml
 
-    with open("config.yaml", "r", encoding="utf-8") as f:
+    config_path = os.environ.get("CONFIG_FILE", "config.yaml")
+    with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     hw = load_hardware()
@@ -202,7 +203,9 @@ def main():
         )
 
     os.makedirs("./logs", exist_ok=True)
-    with open("./logs/optimized_params.json", "w", encoding="utf-8") as f:
+    port = cfg["server"].get("port", 8080)
+    output_json = f"./logs/optimized_params_{port}.json"
+    with open(output_json, "w", encoding="utf-8") as f:
         json.dump({"model_path": model_path, **params}, f, indent=2, ensure_ascii=False)
 
     print(json.dumps({"model_path": model_path, **params}, indent=2, ensure_ascii=False))

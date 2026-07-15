@@ -48,7 +48,11 @@ def step(title: str):
 def main():
     import yaml
 
-    with open("config.yaml", "r", encoding="utf-8") as f:
+    config_path = os.environ.get("CONFIG_FILE", "config.yaml")
+    # Пробрасываем в окружение для всех дочерних процессов
+    os.environ["CONFIG_FILE"] = config_path
+
+    with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     # --- Этап 1: анализ окружения ---
@@ -111,11 +115,39 @@ def main():
 
     provider = cfg["tunnel"]["provider"]
     port = cfg["server"]["port"]
-    proc, public_url = start_tunnel(provider, port)
+    
+    # Очищаем старый туннель на этом порту, если он остался
+    tunnel_pid_file = f"logs/tunnel_{port}.pid"
+    if os.path.exists(tunnel_pid_file):
+        try:
+            with open(tunnel_pid_file, "r") as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 15)  # SIGTERM
+            print(f"[start.py] Остановлен старый туннель (PID={old_pid}) на порту {port}")
+            time.sleep(1)
+        except Exception:
+            pass
+
+    # Извлекаем параметры для перманентных туннелей
+    cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+    cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
+    ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
+
+    proc, public_url = start_tunnel(
+        provider,
+        port,
+        cloudflare_token=cloudflare_token,
+        cloudflare_domain=cloudflare_domain,
+        ngrok_domain=ngrok_domain
+    )
+
+    # Сохраняем PID нового туннеля
+    with open(tunnel_pid_file, "w") as f:
+        f.write(str(proc.pid))
 
     if not public_url:
         print("[start.py][warn] Не удалось автоматически определить публичный URL. "
-              "Проверьте ./logs/tunnel.log")
+              "Проверьте ./logs/tunnel_{}.log".format(port))
         public_url = "http://127.0.0.1:{}".format(port)
     else:
         print(f"[start.py] Публичный URL: {public_url}")
@@ -132,11 +164,12 @@ def generate_vscode_configs(public_url: str, cfg: dict):
     os.makedirs("vscode/generated", exist_ok=True)
     api_base = f"{public_url}/v1"
     api_key = cfg["server"].get("api_key") or "sk-no-key-required"
+    port = cfg["server"]["port"]
 
-    # Читаем реальное имя модели и контекст из optimized_params.json
+    # Читаем реальное имя модели и контекст из optimized_params_${port}.json
     model_name = "local-model"
     ctx_size = 32768
-    params_json = "./logs/optimized_params.json"
+    params_json = f"./logs/optimized_params_{port}.json"
     if os.path.exists(params_json):
         try:
             with open(params_json, "r", encoding="utf-8") as f:
@@ -149,9 +182,9 @@ def generate_vscode_configs(public_url: str, cfg: dict):
             pass
 
     templates = {
-        "continue_config.json": ("vscode/continue_config.json", "vscode/generated/continue_config.json"),
-        "cline_config.json": ("vscode/cline_config.json", "vscode/generated/cline_config.json"),
-        "roo_code_config.json": ("vscode/roo_code_config.json", "vscode/generated/roo_code_config.json"),
+        "continue_config.json": ("vscode/continue_config.json", f"vscode/generated/continue_config_{port}.json"),
+        "cline_config.json": ("vscode/cline_config.json", f"vscode/generated/cline_config_{port}.json"),
+        "roo_code_config.json": ("vscode/roo_code_config.json", f"vscode/generated/roo_code_config_{port}.json"),
     }
     for name, (src, dst) in templates.items():
         if not os.path.exists(src):
@@ -191,9 +224,9 @@ def print_summary(public_url: str, cfg: dict):
 
   MCP: ./mcp/mcp_servers.json, агентный цикл: scripts/mcp_agent.py
 
-  Логи сервера:   ./logs/llama-server.log
-  Логи туннеля:   ./logs/tunnel.log
-  Параметры запуска: ./logs/optimized_params.json
+  Логи сервера:   ./logs/llama-server_{port}.log
+  Логи туннеля:   ./logs/tunnel_{port}.log
+  Параметры запуска: ./logs/optimized_params_{port}.json
 """)
 
 
