@@ -293,7 +293,8 @@ def main():
 
     # Записываем путь для последующих этапов (optimize.py / start_server.sh)
     os.makedirs("./logs", exist_ok=True)
-    with open("./logs/model_path.txt", "w", encoding="utf-8") as f:
+    port = cfg["server"].get("port", 8080)
+    with open(f"./logs/model_path_{port}.txt", "w", encoding="utf-8") as f:
         f.write(model_path)
 
     # --- mmproj (vision projector), опционально ---
@@ -308,12 +309,12 @@ def main():
         mmproj_size_mb = os.path.getsize(mmproj_path) / (1024 ** 2)
         print(f"[download] mmproj готов: {mmproj_path} ({mmproj_size_mb:.1f} MB)")
 
-        with open("./logs/mmproj_path.txt", "w", encoding="utf-8") as f:
+        with open(f"./logs/mmproj_path_{port}.txt", "w", encoding="utf-8") as f:
             f.write(mmproj_path)
     else:
         # Убираем файл со старым путём, если mmproj отключили после
         # предыдущего запуска — start_server.sh иначе продолжит его находить.
-        stale = "./logs/mmproj_path.txt"
+        stale = f"./logs/mmproj_path_{port}.txt"
         if os.path.exists(stale):
             os.remove(stale)
 

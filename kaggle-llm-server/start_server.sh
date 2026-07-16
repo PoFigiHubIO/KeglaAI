@@ -109,10 +109,10 @@ if [[ "$WEBUI_MCP_PROXY" == "True" || "$WEBUI_MCP_PROXY" == "true" ]]; then
 fi
 
 MMPROJ_PATH=""
-if [[ -f "./logs/mmproj_path.txt" ]]; then
-    MMPROJ_PATH=$(cat ./logs/mmproj_path.txt)
+if [[ -f "./logs/mmproj_path_${PORT}.txt" ]]; then
+    MMPROJ_PATH=$(cat "./logs/mmproj_path_${PORT}.txt")
     if [[ ! -f "$MMPROJ_PATH" ]]; then
-        err "mmproj указан в logs/mmproj_path.txt, но файл не найден: $MMPROJ_PATH — vision будет отключён"
+        err "mmproj указан в logs/mmproj_path_${PORT}.txt, но файл не найден: $MMPROJ_PATH — vision будет отключён"
         MMPROJ_PATH=""
     fi
 fi

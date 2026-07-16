@@ -180,17 +180,24 @@ def main():
 
     hw = load_hardware()
 
-    model_dir = cfg["model"]["local_dir"]
-    candidates = [
-        os.path.join(model_dir, f) for f in os.listdir(model_dir)
-        if f.endswith(".gguf")
-    ] if os.path.isdir(model_dir) else []
+    port = cfg["server"].get("port", 8080)
+    model_path_file = f"./logs/model_path_{port}.txt"
+    if os.path.exists(model_path_file):
+        with open(model_path_file, "r", encoding="utf-8") as f:
+            model_path = f.read().strip()
+    else:
+        model_dir = cfg["model"]["local_dir"]
+        candidates = [
+            os.path.join(model_dir, f) for f in os.listdir(model_dir)
+            if f.endswith(".gguf") and not os.path.basename(f).startswith("mmproj")
+        ] if os.path.isdir(model_dir) else []
 
-    if not candidates:
-        print("Не найден .gguf файл в models/. Сначала запустите download_model.py", file=sys.stderr)
-        sys.exit(1)
+        if not candidates:
+            print("Не найден .gguf файл в models/. Сначала запустите download_model.py", file=sys.stderr)
+            sys.exit(1)
 
-    model_path = max(candidates, key=os.path.getsize)
+        model_path = max(candidates, key=os.path.getsize)
+
     params = compute_params(hw, model_path, cfg["server"])
 
     if params["ctx_size_min_requested"] and params["ctx_size"] > params["ctx_size_capped_by_vram"]:
