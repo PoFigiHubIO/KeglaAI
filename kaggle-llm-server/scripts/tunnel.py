@@ -41,6 +41,21 @@ def _ensure_cloudflared() -> str:
     return binary
 
 
+def _ensure_ngrok() -> str:
+    """Скачивает и распаковывает статический бинарник ngrok, если его ещё нет."""
+    binary = "./bin/ngrok"
+    if not os.path.exists(binary):
+        os.makedirs("./bin", exist_ok=True)
+        url = "https://bin.equinox.io/c/bNy8Qzbq7T/ngrok-stable-linux-amd64.tgz"
+        tar_path = "./bin/ngrok.tgz"
+        subprocess.run(["wget", "-q", "-O", tar_path, url], check=True)
+        subprocess.run(["tar", "-xzf", tar_path, "-C", "./bin"], check=True)
+        if os.path.exists(tar_path):
+            os.remove(tar_path)
+    os.chmod(binary, 0o755)
+    return binary
+
+
 def start_cloudflared(port: int, log_path: str = "./logs/tunnel.log", token: str = "", domain: str = ""):
     binary = _ensure_cloudflared()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -97,16 +112,18 @@ def start_ngrok(port: int, log_path: str = "./logs/tunnel.log", domain: str = ""
     import json as _json
     import urllib.request
 
+    binary = _ensure_ngrok()
+
     if not token:
         token = os.environ.get("NGROK_AUTHTOKEN", "")
     if not token:
         raise RuntimeError("Токен Ngrok не задан")
         
-    subprocess.run(["ngrok", "config", "add-authtoken", token], check=False)
+    subprocess.run([binary, "config", "add-authtoken", token], check=False)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_f = open(log_path, "w")
     
-    cmd = ["ngrok", "http", str(port), "--log=stdout"]
+    cmd = [binary, "http", str(port), "--log=stdout"]
     if domain:
         cmd.extend(["--domain", domain])
         

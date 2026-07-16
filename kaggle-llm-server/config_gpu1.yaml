@@ -1,5 +1,5 @@
 model:
-  source: hf
+  source: huggingface
   repo_id: llmfan46/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-uncensored-heretic-GGUF
   filename: gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-uncensored-heretic-Q6_K.gguf
   direct_url: ''
