@@ -47,10 +47,9 @@ server:
   cache_type_v: q8_0
   log_file: ./logs/llama-server_8080.log
 tunnel:
-  # provider: cloudflared
   provider: ngrok
   ngrok_token_env: NGROK_AUTHTOKEN
-  ngrok_domain: ''         # Бесплатный статический домен Ngrok (например, name.ngrok-free.app)
+  ngrok_domain: '28dcb02c7bfa-1965096042333252791.ngrok-free.app'         # Бесплатный статический домен Ngrok (например, name.ngrok-free.app)
   cloudflare_token: ''     # Токен вашего постоянного Cloudflare Tunnel
   cloudflare_domain: ''    # Ваш домен (например, kaggle.my-domain.com), привязанный к токену
 mcp:
