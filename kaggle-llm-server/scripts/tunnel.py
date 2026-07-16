@@ -93,13 +93,15 @@ def start_localtunnel(port: int, log_path: str = "./logs/tunnel.log"):
     return proc, url
 
 
-def start_ngrok(port: int, log_path: str = "./logs/tunnel.log", domain: str = ""):
+def start_ngrok(port: int, log_path: str = "./logs/tunnel.log", domain: str = "", token: str = ""):
     import json as _json
     import urllib.request
 
-    token = os.environ.get("NGROK_AUTHTOKEN", "")
     if not token:
-        raise RuntimeError("Переменная окружения NGROK_AUTHTOKEN не задана")
+        token = os.environ.get("NGROK_AUTHTOKEN", "")
+    if not token:
+        raise RuntimeError("Токен Ngrok не задан")
+        
     subprocess.run(["ngrok", "config", "add-authtoken", token], check=False)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_f = open(log_path, "w")
@@ -141,7 +143,7 @@ def _wait_for_url(log_path: str, pattern: re.Pattern, timeout: int = 45):
     return None
 
 
-def start_tunnel(provider: str, port: int, cloudflare_token: str = "", cloudflare_domain: str = "", ngrok_domain: str = ""):
+def start_tunnel(provider: str, port: int, cloudflare_token: str = "", cloudflare_domain: str = "", ngrok_domain: str = "", ngrok_token: str = ""):
     provider = provider.lower()
     log_path = f"./logs/tunnel_{port}.log"
     if provider == "cloudflared":
@@ -151,7 +153,7 @@ def start_tunnel(provider: str, port: int, cloudflare_token: str = "", cloudflar
     if provider == "localtunnel":
         return start_localtunnel(port, log_path)
     if provider == "ngrok":
-        return start_ngrok(port, log_path, ngrok_domain)
+        return start_ngrok(port, log_path, ngrok_domain, ngrok_token)
     raise ValueError(f"Неизвестный провайдер туннеля: {provider}")
 
 

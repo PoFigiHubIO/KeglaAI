@@ -132,13 +132,17 @@ def main():
     cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
     cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
     ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
+    
+    ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
+    ngrok_token = os.environ.get(ngrok_token_env, "")
 
     proc, public_url = start_tunnel(
         provider,
         port,
         cloudflare_token=cloudflare_token,
         cloudflare_domain=cloudflare_domain,
-        ngrok_domain=ngrok_domain
+        ngrok_domain=ngrok_domain,
+        ngrok_token=ngrok_token
     )
 
     # Сохраняем PID нового туннеля
