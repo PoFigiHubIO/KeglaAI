@@ -46,7 +46,7 @@ def _ensure_ngrok() -> str:
     binary = "./bin/ngrok"
     if not os.path.exists(binary):
         os.makedirs("./bin", exist_ok=True)
-        url = "https://bin.equinox.io/c/bNy8Qzbq7T/ngrok-stable-linux-amd64.tgz"
+        url = "https://bin.equinox.io/c/bNyj1mQ2G8W/ngrok-v3-stable-linux-amd64.tgz"
         tar_path = "./bin/ngrok.tgz"
         subprocess.run(["wget", "-q", "-O", tar_path, url], check=True)
         subprocess.run(["tar", "-xzf", tar_path, "-C", "./bin"], check=True)
