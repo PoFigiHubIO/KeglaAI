@@ -6,7 +6,7 @@
     - `https://28dcb02c7bfa-1965096042333252791.ngrok-free.app`
     - `https://sabbath-lucid-molar.ngrok-free.dev`
 - `[ ]` Stage 2: Разработка SSE MCP сервера генерации на GPU 1 (FastAPI + Diffusers + SSE)
-  - `[ ]` Создать FastAPI-обертку, слушающую порт `8081`.
+  - `[x]` Создать FastAPI-обертку, слушающую порт `8081`.
   - `[ ]` Интегрировать загрузку FLUX.1 Dev (GGUF/FP8) с LoRA `aidmaNSFWunlock`.
   - `[ ]` Интегрировать Wan 2.2 Remix (FP8/GGUF) для Image-to-Video.
   - `[ ]` Настроить менеджер VRAM (переменные PyTorch, VAE tiling, принудительный сбор мусора при смене моделей).
