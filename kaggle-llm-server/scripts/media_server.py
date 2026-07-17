@@ -26,11 +26,13 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
@@ -58,12 +60,30 @@ logging.basicConfig(
 log = logging.getLogger("media_server")
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants & Configuration
 # ---------------------------------------------------------------------------
 HOST = os.environ.get("MEDIA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MEDIA_PORT", "8081"))
 OUTPUT_DIR = Path(os.environ.get("MEDIA_OUTPUT_DIR", "./output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# FLUX.1 Dev model configuration
+FLUX_MODEL_ID = os.environ.get(
+    "FLUX_MODEL_ID", "black-forest-labs/FLUX.1-dev"
+)
+FLUX_LORA_ID = os.environ.get(
+    "FLUX_LORA_ID", "aiMaDi/aidmaNSFWunlock"
+)
+FLUX_LORA_WEIGHT_NAME = os.environ.get(
+    "FLUX_LORA_WEIGHT_NAME", "aidmaNSFWunlock_flux_lora.safetensors"
+)
+FLUX_LORA_SCALE = float(os.environ.get("FLUX_LORA_SCALE", "0.8"))
+
+# Defaults for image generation
+DEFAULT_WIDTH = 1024
+DEFAULT_HEIGHT = 1024
+DEFAULT_STEPS = 20
+DEFAULT_GUIDANCE = 3.5
 
 
 # ---------------------------------------------------------------------------
@@ -140,15 +160,74 @@ class VRAMManager:
 
     async def _load_image_pipeline(self):
         """
-        Load the FLUX.1 Dev image generation pipeline.
+        Load the FLUX.1 Dev image generation pipeline with NF4
+        quantization (fits in ~8 GB VRAM on T4) and inject the
+        aidmaNSFWunlock LoRA for uncensored generation.
 
-        TODO (Stage 2, subtask 2): Replace this stub with actual
-        diffusers FluxPipeline loading with FP8/GGUF quantization
-        and aidmaNSFWunlock LoRA injection.
+        Memory layout on T4 16 GB:
+          - Transformer (NF4): ~6 GB
+          - VAE (FP16):        ~0.2 GB
+          - LoRA weights:      ~0.1 GB
+          - KV / workspace:    ~2 GB
+          Total:               ~8.3 GB  (leaves ~7.7 GB headroom)
         """
-        log.info("Загрузка image pipeline (FLUX.1 Dev) — STUB...")
-        # Placeholder — will be replaced with real Diffusers code
-        return {"name": "flux-dev-stub", "status": "loaded"}
+        log.info(f"Загрузка image pipeline: {FLUX_MODEL_ID}")
+        log.info(f"  Квантование: NF4 (bitsandbytes)")
+        log.info(f"  LoRA: {FLUX_LORA_ID} (scale={FLUX_LORA_SCALE})")
+
+        import torch
+        from diffusers import FluxPipeline
+        from transformers import BitsAndBytesConfig
+
+        # --- NF4 quantization config for the transformer ---
+        # This reduces the 12B-param FLUX transformer from ~24 GB (FP16)
+        # down to ~6 GB, making it fit on a single T4.
+        nf4_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+
+        def _load_sync():
+            pipe = FluxPipeline.from_pretrained(
+                FLUX_MODEL_ID,
+                transformer_kwargs={"quantization_config": nf4_config},
+                torch_dtype=torch.float16,
+            )
+
+            # CPU offload: moves each component to GPU only when needed,
+            # then back to CPU. This dramatically reduces peak VRAM usage
+            # because the text encoders (CLIP + T5-XXL) are not held in
+            # VRAM simultaneously with the transformer.
+            pipe.enable_model_cpu_offload()
+
+            # VAE memory optimizations
+            pipe.vae.enable_tiling()
+            pipe.vae.enable_slicing()
+
+            # --- Load NSFW-unlock LoRA ---
+            try:
+                pipe.load_lora_weights(
+                    FLUX_LORA_ID,
+                    weight_name=FLUX_LORA_WEIGHT_NAME,
+                )
+                pipe.fuse_lora(lora_scale=FLUX_LORA_SCALE)
+                log.info(f"  LoRA '{FLUX_LORA_ID}' загружена и слита (fused)")
+            except Exception as e:
+                log.warning(
+                    f"  Не удалось загрузить LoRA '{FLUX_LORA_ID}': {e}. "
+                    f"Генерация будет работать без неё."
+                )
+
+            return pipe
+
+        # Run the blocking model load in a thread to keep the event loop free
+        loop = asyncio.get_event_loop()
+        pipe = await loop.run_in_executor(None, _load_sync)
+
+        self._force_gc()
+        log.info("Image pipeline загружен и готов к генерации.")
+        return pipe
 
     async def _load_video_pipeline(self):
         """
@@ -266,40 +345,99 @@ async def status():
 @app.post("/api/generate_image")
 async def api_generate_image(request: Request):
     """
-    REST-эндпоинт для генерации изображений.
-    Принимает JSON: {"prompt": "...", "width": 1024, "height": 1024, "steps": 20}
-
-    TODO (Stage 2, subtask 2): Wire up real FLUX pipeline here.
+    REST-эндпоинт для генерации изображений через FLUX.1 Dev.
+    Принимает JSON:
+        {
+            "prompt": "описание изображения",
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance_scale": 3.5,
+            "seed": -1
+        }
+    Возвращает JSON с base64-encoded PNG и метаданными.
     """
     body = await request.json()
     prompt = body.get("prompt", "")
-    width = body.get("width", 1024)
-    height = body.get("height", 1024)
-    steps = body.get("steps", 20)
+    width = body.get("width", DEFAULT_WIDTH)
+    height = body.get("height", DEFAULT_HEIGHT)
+    steps = body.get("steps", DEFAULT_STEPS)
+    guidance = body.get("guidance_scale", DEFAULT_GUIDANCE)
+    seed = body.get("seed", -1)
 
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
 
-    log.info(f"generate_image: prompt='{prompt[:80]}...', {width}x{height}, steps={steps}")
+    # Clamp dimensions to multiples of 8 (required by VAE)
+    width = max(256, min(2048, (width // 8) * 8))
+    height = max(256, min(2048, (height // 8) * 8))
+
+    log.info(
+        f"generate_image: prompt='{prompt[:80]}...', "
+        f"{width}x{height}, steps={steps}, guidance={guidance}"
+    )
 
     pipe = await vram.get_image_pipe()
-
-    # --- STUB: Return a placeholder response ---
-    # Will be replaced with real generation in the next subtask
     image_id = str(uuid.uuid4())[:8]
-    result = {
-        "id": image_id,
-        "status": "stub",
-        "message": f"Image pipeline '{pipe['name']}' received prompt. "
-                   f"Real generation will be implemented in the next step.",
-        "prompt": prompt,
-        "width": width,
-        "height": height,
-        "steps": steps,
-    }
 
-    log.info(f"generate_image: завершено (stub), id={image_id}")
-    return JSONResponse(result)
+    try:
+        import torch
+
+        # Reproducible seed
+        generator = None
+        if seed >= 0:
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+        else:
+            seed = torch.randint(0, 2**32, (1,)).item()
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        # Run inference in a thread to avoid blocking the event loop
+        def _generate():
+            result = pipe(
+                prompt=prompt,
+                width=width,
+                height=height,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=generator,
+            )
+            return result.images[0]
+
+        loop = asyncio.get_event_loop()
+        image = await loop.run_in_executor(None, _generate)
+
+        # Save to disk
+        filename = f"{image_id}.png"
+        filepath = OUTPUT_DIR / filename
+        image.save(filepath, format="PNG")
+        log.info(f"generate_image: сохранено в {filepath}")
+
+        # Encode to base64 for API response
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        result = {
+            "id": image_id,
+            "status": "success",
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "guidance_scale": guidance,
+            "seed": seed,
+            "image_base64": b64_data,
+            "file": str(filepath),
+        }
+        log.info(f"generate_image: завершено, id={image_id}, seed={seed}")
+        return JSONResponse(result)
+
+    except Exception as e:
+        log.error(f"generate_image: ошибка генерации: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image generation failed: {str(e)}",
+        )
 
 
 @app.post("/api/generate_video")

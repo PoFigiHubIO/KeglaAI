@@ -1,0 +1,25 @@
+# Requirements for GPU 1 Media Generation Server
+# Install: pip install -r requirements_media.txt
+#
+# These are ADDITIONAL to the base requirements.txt and are only
+# needed when running the media server (scripts/media_server.py).
+# On Kaggle, torch/torchvision are pre-installed in the GPU image.
+
+# --- Diffusion pipeline ---
+diffusers>=0.32.0
+transformers>=4.46.0
+accelerate>=1.2.0
+safetensors>=0.4.5
+sentencepiece>=0.2.0
+
+# --- Quantization (NF4 for T4 16GB) ---
+bitsandbytes>=0.45.0
+
+# --- Image processing ---
+Pillow>=10.4.0
+
+# --- Already in base requirements.txt, listed for clarity ---
+# fastapi>=0.111.0
+# uvicorn[standard]>=0.30.0
+# huggingface_hub>=0.24.0
+# torch (pre-installed on Kaggle)
