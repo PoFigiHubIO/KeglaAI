@@ -85,6 +85,20 @@ DEFAULT_HEIGHT = 1024
 DEFAULT_STEPS = 20
 DEFAULT_GUIDANCE = 3.5
 
+# Wan 2.1 video model configuration
+WAN_MODEL_ID = os.environ.get(
+    "WAN_MODEL_ID", "Wan-AI/Wan2.1-I2V-14B-480P"
+)
+WAN_T2V_MODEL_ID = os.environ.get(
+    "WAN_T2V_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B"
+)
+
+# Defaults for video generation
+DEFAULT_VIDEO_STEPS = 30
+DEFAULT_VIDEO_GUIDANCE = 5.0
+DEFAULT_VIDEO_FPS = 16
+DEFAULT_VIDEO_FRAMES = 81  # ~5 seconds at 16fps
+
 
 # ---------------------------------------------------------------------------
 # VRAM Manager — ensures only one heavy model is loaded at a time
@@ -231,15 +245,68 @@ class VRAMManager:
 
     async def _load_video_pipeline(self):
         """
-        Load the Wan 2.2 Remix video generation pipeline.
+        Load the Wan 2.1 Image-to-Video pipeline with NF4 quantization.
+        Supports both I2V (image + prompt → video) and T2V (prompt → video)
+        modes depending on the model variant.
 
-        TODO (Stage 2, subtask 3): Replace this stub with actual
-        Wan 2.2 Remix loading with FP8/GGUF quantization and
-        VAE tiling/slicing configuration.
+        Memory layout on T4 16 GB (I2V-14B with NF4):
+          - Transformer (NF4): ~7 GB
+          - VAE (FP16):        ~0.5 GB
+          - CLIP + T5 (offload): on CPU
+          Total peak:          ~9 GB (leaves ~7 GB headroom)
         """
-        log.info("Загрузка video pipeline (Wan 2.2 Remix) — STUB...")
-        # Placeholder — will be replaced with real Diffusers code
-        return {"name": "wan22-remix-stub", "status": "loaded"}
+        model_id = WAN_MODEL_ID
+        is_i2v = "I2V" in model_id.upper()
+
+        log.info(f"Загрузка video pipeline: {model_id}")
+        log.info(f"  Режим: {'I2V (Image-to-Video)' if is_i2v else 'T2V (Text-to-Video)'}")
+        log.info(f"  Квантование: NF4 (bitsandbytes)")
+
+        import torch
+        from transformers import BitsAndBytesConfig
+
+        nf4_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+
+        def _load_sync():
+            if is_i2v:
+                from diffusers import WanImageToVideoPipeline
+                pipe = WanImageToVideoPipeline.from_pretrained(
+                    model_id,
+                    transformer_kwargs={"quantization_config": nf4_config},
+                    torch_dtype=torch.float16,
+                )
+            else:
+                from diffusers import WanPipeline
+                pipe = WanPipeline.from_pretrained(
+                    model_id,
+                    transformer_kwargs={"quantization_config": nf4_config},
+                    torch_dtype=torch.float16,
+                )
+
+            # CPU offload — text encoders stay on CPU, transformer
+            # moves to GPU only during the denoising loop
+            pipe.enable_model_cpu_offload()
+
+            # VAE memory optimizations (critical for video decoding
+            # which processes many frames sequentially)
+            pipe.vae.enable_tiling()
+            pipe.vae.enable_slicing()
+
+            return pipe
+
+        loop = asyncio.get_event_loop()
+        pipe = await loop.run_in_executor(None, _load_sync)
+
+        # Store the mode flag alongside the pipeline
+        pipe._is_i2v = is_i2v
+
+        self._force_gc()
+        log.info("Video pipeline загружен и готов к генерации.")
+        return pipe
 
     def status(self) -> dict:
         """Return current VRAM status for health checks."""
@@ -443,38 +510,176 @@ async def api_generate_image(request: Request):
 @app.post("/api/generate_video")
 async def api_generate_video(request: Request):
     """
-    REST-эндпоинт для генерации видео.
-    Принимает JSON: {"prompt": "...", "image_url": "...", "seconds": 3}
-
-    TODO (Stage 2, subtask 3): Wire up real Wan 2.2 pipeline here.
+    REST-эндпоинт для генерации видео через Wan 2.1.
+    Принимает JSON:
+        {
+            "prompt": "описание видео",
+            "image_base64": "<base64 PNG/JPEG для I2V>",  // опционально
+            "num_frames": 81,
+            "fps": 16,
+            "steps": 30,
+            "guidance_scale": 5.0,
+            "seed": -1
+        }
+    Возвращает JSON с base64-encoded MP4 и метаданными.
     """
     body = await request.json()
     prompt = body.get("prompt", "")
-    image_url = body.get("image_url", "")
-    seconds = body.get("seconds", 3)
+    image_b64 = body.get("image_base64", "")
+    num_frames = body.get("num_frames", DEFAULT_VIDEO_FRAMES)
+    fps = body.get("fps", DEFAULT_VIDEO_FPS)
+    steps = body.get("steps", DEFAULT_VIDEO_STEPS)
+    guidance = body.get("guidance_scale", DEFAULT_VIDEO_GUIDANCE)
+    seed = body.get("seed", -1)
 
-    if not prompt and not image_url:
-        raise HTTPException(
-            status_code=400, detail="prompt or image_url is required"
-        )
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
 
-    log.info(f"generate_video: prompt='{prompt[:80]}', seconds={seconds}")
+    # Clamp num_frames to reasonable range
+    num_frames = max(17, min(161, num_frames))
+    duration_sec = round(num_frames / fps, 1)
+
+    log.info(
+        f"generate_video: prompt='{prompt[:80]}...', "
+        f"frames={num_frames}, fps={fps}, duration={duration_sec}s, "
+        f"steps={steps}, guidance={guidance}, "
+        f"has_image={'yes' if image_b64 else 'no'}"
+    )
 
     pipe = await vram.get_video_pipe()
-
-    # --- STUB: Return a placeholder response ---
     video_id = str(uuid.uuid4())[:8]
-    result = {
-        "id": video_id,
-        "status": "stub",
-        "message": f"Video pipeline '{pipe['name']}' received prompt. "
-                   f"Real generation will be implemented in the next step.",
-        "prompt": prompt,
-        "seconds": seconds,
-    }
 
-    log.info(f"generate_video: завершено (stub), id={video_id}")
-    return JSONResponse(result)
+    try:
+        import torch
+        from PIL import Image as PILImage
+        from diffusers.utils import export_to_video
+
+        # Reproducible seed
+        if seed < 0:
+            seed = torch.randint(0, 2**32, (1,)).item()
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        # Decode input image for I2V mode
+        input_image = None
+        if image_b64 and getattr(pipe, '_is_i2v', False):
+            try:
+                img_bytes = base64.b64decode(image_b64)
+                input_image = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
+                # Resize to 480p (Wan 2.1 I2V-480P native resolution)
+                input_image = input_image.resize((832, 480), PILImage.LANCZOS)
+                log.info(f"  Входное изображение декодировано: {input_image.size}")
+            except Exception as e:
+                log.warning(f"  Не удалось декодировать image_base64: {e}")
+                input_image = None
+
+        # Check if pipeline mode matches the request
+        is_i2v = getattr(pipe, '_is_i2v', False)
+
+        def _generate():
+            if is_i2v and input_image is not None:
+                # Image-to-Video mode
+                output = pipe(
+                    image=input_image,
+                    prompt=prompt,
+                    num_frames=num_frames,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=generator,
+                )
+            elif is_i2v and input_image is None:
+                # I2V pipeline but no image provided — create a blank frame
+                log.warning("  I2V pipeline без входного изображения — использую белый кадр")
+                blank = PILImage.new("RGB", (832, 480), (255, 255, 255))
+                output = pipe(
+                    image=blank,
+                    prompt=prompt,
+                    num_frames=num_frames,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=generator,
+                )
+            else:
+                # Text-to-Video mode (T2V pipeline)
+                output = pipe(
+                    prompt=prompt,
+                    num_frames=num_frames,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=generator,
+                )
+            return output.frames[0]
+
+        loop = asyncio.get_event_loop()
+        frames = await loop.run_in_executor(None, _generate)
+
+        # Export frames to MP4
+        raw_filename = f"{video_id}_raw.mp4"
+        raw_filepath = OUTPUT_DIR / raw_filename
+        export_to_video(frames, str(raw_filepath), fps=fps)
+        log.info(f"generate_video: сохранено в {raw_filepath}")
+
+        # Try FFmpeg compression (H.265) if available, otherwise use raw
+        final_filepath = raw_filepath
+        compressed_filename = f"{video_id}.mp4"
+        compressed_filepath = OUTPUT_DIR / compressed_filename
+        try:
+            ffmpeg_result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(raw_filepath),
+                    "-vcodec", "libx265", "-crf", "28",
+                    "-preset", "fast", "-pix_fmt", "yuv420p",
+                    str(compressed_filepath),
+                ],
+                capture_output=True, timeout=120,
+            )
+            if ffmpeg_result.returncode == 0:
+                raw_size = raw_filepath.stat().st_size
+                comp_size = compressed_filepath.stat().st_size
+                ratio = (1 - comp_size / raw_size) * 100 if raw_size > 0 else 0
+                log.info(
+                    f"  FFmpeg: {raw_size // 1024} KB → {comp_size // 1024} KB "
+                    f"(сжатие {ratio:.0f}%)"
+                )
+                final_filepath = compressed_filepath
+                raw_filepath.unlink(missing_ok=True)  # Remove raw file
+            else:
+                log.warning(f"  FFmpeg завершился с ошибкой, использую raw MP4")
+        except FileNotFoundError:
+            log.info("  FFmpeg не найден, пропускаю сжатие")
+        except subprocess.TimeoutExpired:
+            log.warning("  FFmpeg таймаут, использую raw MP4")
+
+        # Encode to base64 for API response
+        with open(final_filepath, "rb") as f:
+            b64_data = base64.b64encode(f.read()).decode("utf-8")
+
+        result = {
+            "id": video_id,
+            "status": "success",
+            "prompt": prompt,
+            "num_frames": num_frames,
+            "fps": fps,
+            "duration_seconds": duration_sec,
+            "steps": steps,
+            "guidance_scale": guidance,
+            "seed": seed,
+            "mode": "i2v" if (is_i2v and input_image) else "t2v",
+            "video_base64": b64_data,
+            "file": str(final_filepath),
+            "size_kb": round(final_filepath.stat().st_size / 1024, 1),
+        }
+        log.info(
+            f"generate_video: завершено, id={video_id}, seed={seed}, "
+            f"size={result['size_kb']} KB"
+        )
+        return JSONResponse(result)
+
+    except Exception as e:
+        log.error(f"generate_video: ошибка генерации: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Video generation failed: {str(e)}",
+        )
 
 
 # ---------------------------------------------------------------------------

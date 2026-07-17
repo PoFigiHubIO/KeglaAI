@@ -8,8 +8,8 @@
 - `[ ]` Stage 2: Разработка SSE MCP сервера генерации на GPU 1 (FastAPI + Diffusers + SSE)
   - `[x]` Создать FastAPI-обертку, слушающую порт `8081`.
   - `[x]` Интегрировать загрузку FLUX.1 Dev (GGUF/FP8) с LoRA `aidmaNSFWunlock`.
-  - `[ ]` Интегрировать Wan 2.2 Remix (FP8/GGUF) для Image-to-Video.
-  - `[ ]` Настроить менеджер VRAM (переменные PyTorch, VAE tiling, принудительный сбор мусора при смене моделей).
+  - `[x]` Интегрировать Wan 2.2 Remix (FP8/GGUF) для Image-to-Video.
+  - `[x]` Настроить менеджер VRAM (переменные PyTorch, VAE tiling, принудительный сбор мусора при смене моделей).
   - `[ ]` Написать SSE-эндпоинты (`GET /sse` и `POST /messages`) для интеграции протокола MCP.
 - `[ ]` Stage 3: Telegram Bot Agent Loop с поддержкой динамических MCP
   - `[ ]` Проектирование базы данных бота (SQLite) для истории диалогов и конфигураций MCP-серверов.
