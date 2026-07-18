@@ -113,55 +113,87 @@ class MCPOrchestrator:
 
     async def _run_server_loop(self, name: str, cfg: dict):
         from mcp import ClientSession
-        try:
-            if cfg["server_type"] == "stdio":
-                from mcp import stdio_client, StdioServerParameters
+        
+        max_restarts = 3
+        backoff = [5, 15, 30]
+        restart_count = 0
 
-                cmd = cfg["command"]
-                # Adjust for Windows environment
-                if os.name == "nt":
-                    if cmd == "npx":
-                        cmd = "npx.cmd"
-                    elif cmd == "npm":
-                        cmd = "npm.cmd"
+        while True:
+            try:
+                if cfg["server_type"] == "stdio":
+                    from mcp import stdio_client, StdioServerParameters
 
-                params = StdioServerParameters(
-                    command=cmd,
-                    args=cfg["args"],
-                    env={**os.environ, **cfg["env"]}
-                )
-                log.info(f"Spawning stdio process for '{name}': {cmd} {' '.join(cfg['args'])}")
-                async with stdio_client(params) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        tools_res = await session.list_tools()
-                        self.sessions[name] = session
-                        self.cached_tools[name] = tools_res.tools
-                        log.info(f"MCP Server '{name}' (stdio) active with {len(tools_res.tools)} tools.")
-                        while True:
-                            await asyncio.sleep(1)
+                    cmd = cfg["command"]
+                    if os.name == "nt":
+                        if cmd == "npx":
+                            cmd = "npx.cmd"
+                        elif cmd == "npm":
+                            cmd = "npm.cmd"
 
-            elif cfg["server_type"] == "sse":
-                from mcp.client.sse import sse_client
-                log.info(f"Connecting to SSE endpoint for '{name}': {cfg['url']}")
-                async with sse_client(cfg["url"]) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        tools_res = await session.list_tools()
-                        self.sessions[name] = session
-                        self.cached_tools[name] = tools_res.tools
-                        log.info(f"MCP Server '{name}' (SSE) active with {len(tools_res.tools)} tools.")
-                        while True:
-                            await asyncio.sleep(1)
+                    params = StdioServerParameters(
+                        command=cmd,
+                        args=cfg["args"],
+                        env={**os.environ, **cfg["env"]}
+                    )
+                    log.info(f"Spawning stdio process for '{name}': {cmd} {' '.join(cfg['args'])}")
+                    async with stdio_client(params) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            tools_res = await session.list_tools()
+                            self.sessions[name] = session
+                            self.cached_tools[name] = tools_res.tools
+                            log.info(f"MCP Server '{name}' (stdio) active with {len(tools_res.tools)} tools.")
+                            
+                            # Reset restart counter upon successful connection
+                            restart_count = 0
+                            
+                            while True:
+                                await asyncio.sleep(1)
 
-        except asyncio.CancelledError:
-            log.info(f"MCP Server '{name}' connection cancelled.")
-        except Exception as e:
-            log.error(f"Error in MCP Server '{name}' connection loop: {e}", exc_info=True)
-        finally:
-            self.sessions.pop(name, None)
-            self.cached_tools.pop(name, None)
-            self.tasks.pop(name, None)
+                elif cfg["server_type"] == "sse":
+                    from mcp.client.sse import sse_client
+                    log.info(f"Connecting to SSE endpoint for '{name}': {cfg['url']}")
+                    async with sse_client(cfg["url"]) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            tools_res = await session.list_tools()
+                            self.sessions[name] = session
+                            self.cached_tools[name] = tools_res.tools
+                            log.info(f"MCP Server '{name}' (SSE) active with {len(tools_res.tools)} tools.")
+                            
+                            restart_count = 0
+                            
+                            while True:
+                                await asyncio.sleep(1)
+
+            except asyncio.CancelledError:
+                log.info(f"MCP Server '{name}' connection loop cancelled.")
+                break
+            except Exception as e:
+                log.error(f"Error in MCP Server '{name}' connection loop: {e}", exc_info=True)
+                self.sessions.pop(name, None)
+                self.cached_tools.pop(name, None)
+
+                # Process Warden recovery logic
+                if restart_count < max_restarts:
+                    sleep_time = backoff[min(restart_count, len(backoff) - 1)]
+                    restart_count += 1
+                    log.warning(
+                        f"[Process Warden] MCP Server '{name}' connection dropped/crashed. "
+                        f"Restarting in {sleep_time}s... (attempt {restart_count}/{max_restarts})"
+                    )
+                    await asyncio.sleep(sleep_time)
+                else:
+                    log.error(
+                        f"[Process Warden] MCP Server '{name}' failed repeatedly after "
+                        f"{max_restarts} attempts. Giving up."
+                    )
+                    break
+        
+        # Cleanup
+        self.sessions.pop(name, None)
+        self.cached_tools.pop(name, None)
+        self.tasks.pop(name, None)
 
     async def stop_server(self, name: str):
         """Stop and clean up a server connection."""

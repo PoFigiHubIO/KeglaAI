@@ -114,12 +114,14 @@ class VRAMManager:
     Manages GPU memory by ensuring mutual exclusion between the image
     and video generation pipelines. Only one pipeline can be resident
     in VRAM at any given time on a single T4 (16 GB).
+    Supports dynamic loading and hot-swapping of LoRA style layers.
     """
 
     def __init__(self):
         self.active: ActiveModel = ActiveModel.NONE
         self.image_pipe = None
         self.video_pipe = None
+        self.active_loras = []  # List of {"path_or_id": ..., "weight_name": ..., "scale": ...}
         self._lock = asyncio.Lock()
 
     async def get_image_pipe(self):
@@ -172,30 +174,99 @@ class VRAMManager:
         except ImportError:
             pass
 
+    async def load_style_lora(self, lora_name_or_url: str, scale: float = 1.0) -> str:
+        """
+        Dynamically downloads and loads/fuses a style LoRA to the active FLUX pipeline.
+        Saves the file locally in /kaggle/working/loras/ for caching.
+        """
+        import httpx
+        from pathlib import Path
+
+        loras_dir = Path("/kaggle/working/loras")
+        loras_dir.mkdir(parents=True, exist_ok=True)
+
+        log.info(f"Requested style LoRA load: {lora_name_or_url} with scale {scale}")
+        
+        local_path = None
+        weight_name = None
+
+        if lora_name_or_url.startswith(("http://", "https://")):
+            import urllib.parse
+            parsed = urllib.parse.urlparse(lora_name_or_url)
+            filename = os.path.basename(parsed.path) or f"lora_{uuid.uuid4().hex[:8]}.safetensors"
+            if not filename.endswith(".safetensors"):
+                filename += ".safetensors"
+            
+            local_path = loras_dir / filename
+            weight_name = filename
+
+            if not local_path.exists():
+                log.info(f"Downloading LoRA from URL: {lora_name_or_url} -> {local_path}")
+                async with httpx.AsyncClient(follow_redirects=True, timeout=300.0) as client:
+                    async with client.stream("GET", lora_name_or_url) as response:
+                        if response.status_code != 200:
+                            raise Exception(f"HTTP error {response.status_code} downloading LoRA")
+                        with open(local_path, "wb") as f:
+                            async for chunk in response.aiter_bytes():
+                                f.write(chunk)
+                log.info("LoRA download complete.")
+            else:
+                log.info(f"LoRA found in cache: {local_path}")
+        else:
+            from huggingface_hub import hf_hub_download
+            log.info(f"Downloading LoRA from HF Hub: {lora_name_or_url}")
+            try:
+                local_file = hf_hub_download(repo_id=lora_name_or_url, filename="pytorch_lora_weights.safetensors", cache_dir=str(loras_dir))
+                local_path = Path(local_file)
+                weight_name = "pytorch_lora_weights.safetensors"
+            except Exception as e:
+                log.warning(f"Could not download pytorch_lora_weights.safetensors: {e}. Trying to download any .safetensors...")
+                from huggingface_hub import HfApi
+                api = HfApi()
+                files = api.list_repo_files(repo_id=lora_name_or_url)
+                safetensors = [f for f in files if f.endswith(".safetensors")]
+                if not safetensors:
+                    raise Exception(f"No .safetensors file found in Hugging Face repository {lora_name_or_url}")
+                target_file = safetensors[0]
+                local_file = hf_hub_download(repo_id=lora_name_or_url, filename=target_file, cache_dir=str(loras_dir))
+                local_path = Path(local_file)
+                weight_name = os.path.basename(local_file)
+
+        # Store the active LoRA config
+        self.active_loras = [{"path_or_id": str(local_path) if local_path else lora_name_or_url, "weight_name": weight_name, "scale": scale}]
+        
+        async with self._lock:
+            if self.active == ActiveModel.IMAGE and self.image_pipe is not None:
+                log.info("Unloading existing LoRAs from FLUX...")
+                self.image_pipe.unload_lora()
+                
+                log.info(f"Loading and fusing new style LoRA: {local_path or lora_name_or_url}")
+                if local_path:
+                    self.image_pipe.load_lora_weights(
+                        str(local_path.parent),
+                        weight_name=weight_name
+                    )
+                else:
+                    self.image_pipe.load_lora_weights(lora_name_or_url)
+                
+                self.image_pipe.fuse_lora(lora_scale=scale)
+                log.info("LoRA successfully fused.")
+
+        return f"LoRA {lora_name_or_url} successfully cached and fused with scale {scale}."
+
     async def _load_image_pipeline(self):
         """
         Load the FLUX.1 Dev image generation pipeline with NF4
         quantization (fits in ~8 GB VRAM on T4) and inject the
-        aidmaNSFWunlock LoRA for uncensored generation.
-
-        Memory layout on T4 16 GB:
-          - Transformer (NF4): ~6 GB
-          - VAE (FP16):        ~0.2 GB
-          - LoRA weights:      ~0.1 GB
-          - KV / workspace:    ~2 GB
-          Total:               ~8.3 GB  (leaves ~7.7 GB headroom)
+        active style LoRA or the default aidmaNSFWunlock LoRA.
         """
         log.info(f"Загрузка image pipeline: {FLUX_MODEL_ID}")
         log.info(f"  Квантование: NF4 (bitsandbytes)")
-        log.info(f"  LoRA: {FLUX_LORA_ID} (scale={FLUX_LORA_SCALE})")
 
         import torch
         from diffusers import FluxPipeline
         from transformers import BitsAndBytesConfig
 
-        # --- NF4 quantization config for the transformer ---
-        # This reduces the 12B-param FLUX transformer from ~24 GB (FP16)
-        # down to ~6 GB, making it fit on a single T4.
         nf4_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -209,33 +280,41 @@ class VRAMManager:
                 torch_dtype=torch.float16,
             )
 
-            # CPU offload: moves each component to GPU only when needed,
-            # then back to CPU. This dramatically reduces peak VRAM usage
-            # because the text encoders (CLIP + T5-XXL) are not held in
-            # VRAM simultaneously with the transformer.
             pipe.enable_model_cpu_offload()
-
-            # VAE memory optimizations
             pipe.vae.enable_tiling()
             pipe.vae.enable_slicing()
 
-            # --- Load NSFW-unlock LoRA ---
+            # --- Load active style LoRAs or fallback to default NSFW unlock ---
             try:
-                pipe.load_lora_weights(
-                    FLUX_LORA_ID,
-                    weight_name=FLUX_LORA_WEIGHT_NAME,
-                )
-                pipe.fuse_lora(lora_scale=FLUX_LORA_SCALE)
-                log.info(f"  LoRA '{FLUX_LORA_ID}' загружена и слита (fused)")
+                if self.active_loras:
+                    for lora in self.active_loras:
+                        log.info(f"Loading custom style LoRA: {lora['path_or_id']} ...")
+                        if os.path.exists(lora['path_or_id']):
+                            # It is a cached local file path
+                            pipe.load_lora_weights(
+                                os.path.dirname(lora['path_or_id']),
+                                weight_name=lora['weight_name']
+                            )
+                        else:
+                            pipe.load_lora_weights(lora['path_or_id'])
+                        pipe.fuse_lora(lora_scale=lora['scale'])
+                        log.info(f"Custom LoRA successfully loaded and fused (scale={lora['scale']})")
+                else:
+                    log.info(f"  LoRA: {FLUX_LORA_ID} (scale={FLUX_LORA_SCALE})")
+                    pipe.load_lora_weights(
+                        FLUX_LORA_ID,
+                        weight_name=FLUX_LORA_WEIGHT_NAME,
+                    )
+                    pipe.fuse_lora(lora_scale=FLUX_LORA_SCALE)
+                    log.info(f"  LoRA '{FLUX_LORA_ID}' загружена и слита (fused)")
             except Exception as e:
                 log.warning(
-                    f"  Не удалось загрузить LoRA '{FLUX_LORA_ID}': {e}. "
+                    f"  Не удалось загрузить LoRA: {e}. "
                     f"Генерация будет работать без неё."
                 )
 
             return pipe
 
-        # Run the blocking model load in a thread to keep the event loop free
         loop = asyncio.get_event_loop()
         pipe = await loop.run_in_executor(None, _load_sync)
 
@@ -404,6 +483,30 @@ async def health():
 async def status():
     """Детальная информация о состоянии VRAM и загруженных моделях."""
     return vram.status()
+
+
+@app.post("/api/load_lora")
+async def api_load_lora(request: Request):
+    """
+    REST-эндпоинт для динамической загрузки LoRA-стилей.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    lora_name_or_url = body.get("lora_name_or_url")
+    scale = float(body.get("scale", 1.0))
+    
+    if not lora_name_or_url:
+        raise HTTPException(status_code=400, detail="Missing parameter 'lora_name_or_url'")
+        
+    try:
+        msg = await vram.load_style_lora(lora_name_or_url, scale)
+        return {"status": "success", "message": msg}
+    except Exception as e:
+        log.error(f"Error loading LoRA: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/v1/handover/complete")
@@ -853,6 +956,28 @@ MCP_TOOLS = [
             "required": ["prompt"],
         },
     },
+    {
+        "name": "load_style_lora",
+        "description": (
+            "Динамически загружает и активирует LoRA-стиль для генерации изображений FLUX. "
+            "Поддерживает Hugging Face ID (например, 'owner/repo') или прямые HTTPS-ссылки на safetensors файлы."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "lora_name_or_url": {
+                    "type": "string",
+                    "description": "Hugging Face ID модели или прямая URL-ссылка на LoRA файл (.safetensors)",
+                },
+                "scale": {
+                    "type": "number",
+                    "description": "Сила эффекта LoRA от 0.0 до 1.5 (по умолчанию 1.0)",
+                    "default": 1.0,
+                },
+            },
+            "required": ["lora_name_or_url"],
+        },
+    },
 ]
 
 
@@ -1056,10 +1181,28 @@ async def _call_generate_video(args: dict) -> list[dict]:
         return [{"type": "text", "text": f"Error: {str(e)}"}]
 
 
+async def _call_load_style_lora(args: dict) -> list[dict]:
+    """
+    Execute dynamic LoRA load and return MCP content blocks.
+    """
+    lora_name_or_url = args.get("lora_name_or_url", "")
+    scale = float(args.get("scale", 1.0))
+    if not lora_name_or_url:
+        return [{"type": "text", "text": "Error: lora_name_or_url is required"}]
+    
+    try:
+        msg = await vram.load_style_lora(lora_name_or_url, scale)
+        return [{"type": "text", "text": msg}]
+    except Exception as e:
+        log.error(f"MCP load_style_lora error: {e}", exc_info=True)
+        return [{"type": "text", "text": f"Error: {str(e)}"}]
+
+
 # Tool dispatch table
 _TOOL_HANDLERS = {
     "generate_image": _call_generate_image,
     "generate_video": _call_generate_video,
+    "load_style_lora": _call_load_style_lora,
 }
 
 
