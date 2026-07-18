@@ -252,3 +252,16 @@ We implemented dynamic styling and process recovery supervisor loops:
    - Sets the database status.
    - Triggers up to 3 automatic restart attempts in the background with exponential backoffs (5s, 15s, 30s).
    - Resets the restart counter upon a successful connection, preventing process leaks or permanently dead tools.
+
+---
+
+## 16. Stage 6: Integration, Testing, & Ring Topology Config
+
+### Problem Description
+To ensure that all components (llama-server on GPU 0, media-server on GPU 1, and the Telegram Bot) work together seamlessly, and to configure the client connection to media-server to boot automatically when the bot initializes.
+
+### Changes Made
+We finalized the integration logic:
+1. **Auto-Start Client Connection**: Enforced `auto_start=True` for the `media-server` connection inside **[scripts/bot_db.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/bot_db.py)**. If the database was pre-existing or restored from a backup with `auto_start=False`, the DB initializer runs an SQL update command on startup to force-correct it. This ensures that the Telegram Bot automatically establishes the SSE client connection to GPU 1 upon boot, exposing the tools `generate_image`, `generate_video`, and `load_style_lora`.
+2. **Local Loopback Communication**: Kept communication between GPU 0/Bot and GPU 1 local (`http://127.0.0.1:8081/sse`), bypassing external internet routing for lower latency.
+3. **Sequential Boot Sequence**: Configured the Jupyter notebook cells in **[kaggle_run_all.ipynb](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/notebooks/kaggle_run_all.ipynb)** to start GPU 0 (LLM) and wait for health confirmation before immediately launching GPU 1 (Media Server, Bot, and Failover Timer).
