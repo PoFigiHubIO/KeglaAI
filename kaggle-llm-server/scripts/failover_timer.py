@@ -24,7 +24,12 @@ logging.basicConfig(
 log = logging.getLogger("failover_timer")
 
 # Configuration (defaults to 8 hours 50 minutes)
-ROTATION_TIME_SECONDS = int(os.environ.get("ROTATION_TIME_SECONDS", str(8 * 3600 + 50 * 60)))
+try:
+    from kaggle_secrets import UserSecretsClient
+    ROTATION_TIME_SECONDS = int(UserSecretsClient().get_secret("ROTATION_TIME_SECONDS"))
+    log.info(f"Loaded ROTATION_TIME_SECONDS from Kaggle Secrets: {ROTATION_TIME_SECONDS}s")
+except Exception:
+    ROTATION_TIME_SECONDS = int(os.environ.get("ROTATION_TIME_SECONDS", str(8 * 3600 + 50 * 60)))
 
 
 async def trigger_next_node():
@@ -33,6 +38,18 @@ async def trigger_next_node():
     username = os.environ.get("NEXT_KAGGLE_USERNAME", "")
     key = os.environ.get("NEXT_KAGGLE_KEY", "")
     slug = os.environ.get("NEXT_KAGGLE_SLUG", "keglaai")
+
+    if not username or not key:
+        try:
+            from kaggle_secrets import UserSecretsClient
+            user_secrets = UserSecretsClient()
+            if not username:
+                username = user_secrets.get_secret("NEXT_KAGGLE_USERNAME")
+            if not key:
+                key = user_secrets.get_secret("NEXT_KAGGLE_KEY")
+            log.info("Loaded next Kaggle credentials from secrets.")
+        except Exception as e:
+            log.warning(f"Could not load credentials from Kaggle Secrets: {e}")
 
     if not username or not key:
         log.warning("NEXT_KAGGLE_USERNAME or NEXT_KAGGLE_KEY not set. Cannot push next kernel. Handover aborted.")
