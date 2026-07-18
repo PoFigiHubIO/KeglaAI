@@ -12,36 +12,44 @@
 3. Следуйте инструкциям: введите отображаемое имя бота, а затем системное имя (username), заканчивающееся на `_bot` (например, `MyKaggleClusterBot`).
 4. **@BotFather** выдаст вам строку API токена (формата `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`). Скопируйте её. Этот токен будет общим для всех нод кластера.
 
-### Б. Ngrok (Публичные туннели)
-1. Зарегистрируйтесь или авторизуйтесь на сайте [ngrok.com](https://ngrok.com/).
-2. В левой панели управления перейдите в раздел **Getting Started** -> **Your Authtoken**.
-3. Скопируйте строку вашего персонального токена.
-4. *(Опционально)* Если вы хотите использовать постоянный адрес туннеля, перейдите в раздел **Cloud Edge** -> **Domains**, создайте бесплатный статический домен и скопируйте его имя (например, `sabbath-lucid-molar.ngrok-free.dev`).
-5. **Важно для 24/7 работы**: Поскольку во время переключения (Handover) старая и новая ноды работают одновременно в течение 1–2 минут, использование одного токена Ngrok вызовет ошибку лимита одновременных сессий. Рекомендуется использовать два разных аккаунта Ngrok:
-   - Токен от первого аккаунта пропишите в секреты **Account A** под именем `NGROK_AUTHTOKEN` (для LLM на порту 8080) и `NGROK_AUTHTOKEN_2` (для медиа-сервера на порту 8081).
-   - Токен от второго аккаунта пропишите в секреты **Account B**.
+### Б. Выбор туннелирования: ЛИБО Ngrok, ЛИБО Cloudflare Tunnel
+
+Для вывода локальных портов контейнера Kaggle наружу в интернет проект поддерживает два альтернативных провайдера. Вы выбираете **один** из них и прописываете его в `config.yaml` в параметре `tunnel.provider` (`ngrok` или `cloudflare`).
+
+#### Вариант I: Использование Ngrok (Простой запуск без своего домена)
+1. Зарегистрируйтесь на сайте [ngrok.com](https://ngrok.com/).
+2. Перейдите в раздел **Getting Started > Your Authtoken** и скопируйте ваш токен.
+3. *(Опционально)* Во вкладке **Cloud Edge > Domains** заберите имя постоянного бесплатного домена.
+4. **Ограничение**: Так как при ротации старая и новая ноды работают одновременно в течение пары минут, один аккаунт Ngrok выдаст ошибку превышения сессий. Поэтому вам понадобятся **два разных аккаунта Ngrok** (для Account A и Account B).
+
+#### Вариант II: Использование Cloudflare Tunnel (Рекомендуется, полностью бесплатно)
+1. Вы должны иметь собственный домен, привязанный к Cloudflare (например, `my-domain.com`).
+2. В панели Cloudflare перейдите в **Zero Trust** -> **Networks** -> **Tunnels** -> **Create a Tunnel**.
+3. Назовите туннель (например, `kaggle-llm`) и сохраните его.
+4. Cloudflare покажет команду для установки. Скопируйте из неё буквенно-цифровой токен туннеля (после ключа `--token`). Этот токен прописывается в секреты Kaggle как `CLOUDFLARE_TUNNEL_TOKEN`.
+5. Во вкладке **Public Hostname** внутри настроек туннеля привяжите поддомен (например, `api.my-domain.com`) к локальному порту `http://localhost:8080` (для LLM) и поддомен (например, `media.my-domain.com`) к `http://localhost:8081` (для картинок и видео).
+6. **Преимущество**: При таком подходе Cloudflare автоматически привяжет входящий трафик к активной ноде по постоянному домену.
+
+---
 
 ### В. Cloudflare Worker + KV (Статический маршрутизатор)
+> [!NOTE]
+> Этот шаг **ОБЯЗАТЕЛЕН** только при использовании Ngrok или временных туннелей (где URL меняется при каждом перезапуске). 
+> Если вы настроили постоянный Cloudflare Tunnel с привязкой к собственному домену (Вариант II выше), Cloudflare Worker вам **НЕ НУЖЕН**, так как ваш адрес `api.my-domain.com` никогда не меняется!
+
 1. Авторизуйтесь на сайте [dash.cloudflare.com](https://dash.cloudflare.com/).
-2. В боковом меню перейдите в раздел **Workers & Pages**.
-3. Создайте хранилище KV (Ключ-Значение) для адресов:
-   - В меню подраздела нажмите на **KV**.
-   - Нажмите синюю кнопку **Create a Namespace**. Назовите базу `KAGGLER_ROUTER_KV` и нажмите **Create**.
-4. Создайте сам Worker:
-   - Перейдите в **Workers & Pages > Overview**.
-   - Нажмите **Create Application** -> **Create Worker**.
+2. Перейдите в раздел **Workers & Pages**.
+3. Создайте хранилище KV:
+   - Нажмите на вкладку **KV** -> **Create a Namespace**. Назовите базу `KAGGLER_ROUTER_KV` и нажмите **Create**.
+4. Создайте Worker:
+   - В разделе **Workers & Pages > Overview** нажмите **Create Application** -> **Create Worker**.
    - Назовите воркер (например, `kaggle-router`) и нажмите **Deploy**.
-   - На странице воркера нажмите кнопку **Edit Code** (или **Quick Edit**), очистите стандартный шаблон и вставьте весь код из файла **[scripts/cf_worker.js](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/cf_worker.js)**. Нажмите **Save and Deploy**.
-5. Привяжите KV и секрет безопасности:
-   - Вернитесь на панель управления воркера `kaggle-router`, выберите вкладку **Settings** (наверху).
-   - В разделе **KV Namespace Bindings** нажмите **Add binding**. Введите:
-     - Variable name (имя переменной в коде): `KAGGLER_ROUTER`
-     - KV Namespace: выберите из выпадающего списка `KAGGLER_ROUTER_KV`.
-     - Нажмите **Save**.
-   - В разделе **Environment Variables** нажмите **Add variable** для создания токена авторизации:
-     - Key: `HANDOVER_SECRET`
-     - Value: Любая секретная строка (например, `my_super_secret_token_123`). Нажмите **Save**.
-6. Скопируйте итоговый адрес воркера (например, `https://kaggle-router.my-username.workers.dev`). Любые внешние программы будут обращаться по этому адресу, а Cloudflare Worker автоматически перенаправит их на активную ноду Kaggle.
+   - Нажмите кнопку **Edit Code**, вставьте весь код из файла **[scripts/cf_worker.js](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/cf_worker.js)**. Нажмите **Save and Deploy**.
+5. Привяжите KV и Secret к Worker:
+   - В настройках воркера `kaggle-router` выберите вкладку **Settings** -> **Variables**.
+   - В разделе **KV Namespace Bindings** нажмите **Add binding**: Variable name = `KAGGLER_ROUTER`, KV Namespace = `KAGGLER_ROUTER_KV`. Нажмите **Save**.
+   - В разделе **Environment Variables** нажмите **Add variable**: Key = `HANDOVER_SECRET`, Value = Любая секретная строка (например, `my_super_secret_token_123`). Нажмите **Save**.
+6. Скопируйте адрес воркера (например, `https://kaggle-router.my-username.workers.dev`). Любые запросы к нему будут автоматически перенаправляться на активный туннель Kaggle.
 
 ### Г. Yandex Disk (Синхронизация базы переписки и MCP)
 Синхронизация SQLite базы данных `agent.db` происходит через протокол WebDAV. Это самый стабильный способ синхронизации без необходимости сложной авторизации OAuth2 (как в Google Drive), так как все параметры задаются через переменные окружения.
@@ -69,12 +77,17 @@
 | :--- | :--- | :--- | :--- |
 | `TELEGRAM_BOT_TOKEN` | *Токен вашего Telegram-бота* | *Токен вашего Telegram-бота* | Бот, созданный через BotFather |
 | `HANDOVER_SECRET` | `my_super_secret_token_123` | `my_super_secret_token_123` | Должен совпадать с `HANDOVER_SECRET` в CF Worker |
-| `CF_WORKER_URL` | `https://kaggle-router.my-username.workers.dev` | `https://kaggle-router.my-username.workers.dev` | URL-адрес вашего воркера |
+| `CF_WORKER_URL` | *Ссылка на CF Worker* (опционально) | *Ссылка на CF Worker* (опционально) | **Только для Ngrok**: Ссылка на Cloudflare Worker |
 | `RCLONE_PROVIDER` | `yandex` | `yandex` | Провайдер облачного бэкапа |
 | `RCLONE_USER` | `ваша_почта@yandex.ru` | `ваша_почта@yandex.ru` | Логин к Яндекс Диску |
 | `RCLONE_PASS` | `abcd-efgh-ijkl-mnop` | `abcd-efgh-ijkl-mnop` | Пароль приложения Диска |
+| **Для Ngrok (выбрать ЛИБО Ngrok...)**: | | | |
 | `NGROK_AUTHTOKEN` | *Ngrok Токен 1 от Account A* | *Ngrok Токен 1 от Account B* | Токен туннеля для GPU 0 (Порт 8080) |
 | `NGROK_AUTHTOKEN_2` | *Ngrok Токен 2 от Account A* | *Ngrok Токен 2 от Account B* | Токен туннеля для GPU 1 (Порт 8081) |
+| **Для CF Tunnels (...ЛИБО Cloudflare)**: | | | |
+| `CLOUDFLARE_TUNNEL_TOKEN` | *CF Токен от Account A* | *CF Токен от Account B* | Токен туннеля Cloudflare |
+| `CLOUDFLARE_DOMAIN` | `api.my-domain.com` | `api.my-domain.com` | Ваш привязанный домен Cloudflare |
+| **Системные параметры**: | | | |
 | `ROTATION_TIME_SECONDS` | `600` | `600` | **Тестовый лимит**: 10 минут (600 секунд) вместо 9 часов |
 | `NEXT_KAGGLE_USERNAME` | `username_от_Account_B` | `username_от_Account_A` | **Имя целевого аккаунта** (указывает на соседа) |
 | `NEXT_KAGGLE_KEY` | `api_key_от_Account_B` | `api_key_от_Account_A` | **API Ключ целевого аккаунта** (из kaggle.json соседа) |
