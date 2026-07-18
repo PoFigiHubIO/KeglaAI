@@ -11,12 +11,12 @@
   - `[x]` Интегрировать Wan 2.2 Remix (FP8/GGUF) для Image-to-Video.
   - `[x]` Настроить менеджер VRAM (переменные PyTorch, VAE tiling, принудительный сбор мусора при смене моделей).
   - `[x]` Написать SSE-эндпоинты (`GET /sse` и `POST /messages`) для интеграции протокола MCP.
-- `[ ]` Stage 3: Telegram Bot Agent Loop с поддержкой динамических MCP
-  - `[ ]` Проектирование базы данных бота (SQLite) для истории диалогов и конфигураций MCP-серверов.
-  - `[ ]` Разработка ядра Telegram-бота (Python, `python-telegram-bot`, асинхронный цикл).
-  - `[ ]` Реализация клиента MCP и Tool-Calling (подключение к SSE-ссылке GPU 1).
-  - `[ ]` Разработка модуля авто-установки (Dynamic Installer: `search_mcp` и `install_mcp`).
-  - `[ ]` Реализация интерфейса ТГ-команд (`/mcp_list`, `/mcp_enable`, `/mcp_disable`, `/mcp_search`).
+- `[x]` Stage 3: Telegram Bot Agent Loop с поддержкой динамических MCP
+  - `[x]` Проектирование базы данных бота (SQLite) для истории диалогов и конфигураций MCP-серверов.
+  - `[x]` Разработка ядра Telegram-бота (Python, `python-telegram-bot`, асинхронный цикл).
+  - `[x]` Реализация клиента MCP и Tool-Calling (подключение к SSE-ссылке GPU 1).
+  - `[x]` Разработка модуля авто-установки (Dynamic Installer: `search_mcp` и `install_mcp`).
+  - `[x]` Реализация интерфейса ТГ-команд (`/mcp_list`, `/mcp_enable`, `/mcp_disable`, `/mcp_search`).
 - `[ ]` Stage 4: Разработка бесшовного Failover (24/7 работа серверов)
   - `[ ]` Написать Cloudflare Worker (маршрутизатор трафика) с интеграцией Cloudflare KV.
   - `[ ]` Реализовать скрипты Rclone для синхронизации БД (`agent.db`) с Yandex Disk / Google Drive.
