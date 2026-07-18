@@ -38,8 +38,8 @@ apt_install() {
 log "Обновление списка пакетов..."
 sudo apt-get update -y -qq || warn "apt-get update завершился с предупреждениями, продолжаем"
 
-log "Установка базовых инструментов сборки (build-essential, git, curl, wget)..."
-apt_install build-essential git curl wget unzip pkg-config software-properties-common
+log "Установка базовых инструментов сборки (build-essential, git, curl, wget, rclone)..."
+apt_install build-essential git curl wget unzip pkg-config software-properties-common rclone
 
 log "Установка cmake..."
 if ! command -v cmake &>/dev/null || [[ "$(cmake --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)" < "3.21" ]]; then

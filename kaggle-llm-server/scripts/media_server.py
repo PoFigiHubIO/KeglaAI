@@ -406,6 +406,69 @@ async def status():
     return vram.status()
 
 
+@app.post("/v1/handover/complete")
+async def handover_complete(request: Request):
+    """
+    Эндпоинт передачи управления (handover). Вызывается следующей нодой,
+    когда та успешно запустилась. Запускает финальный бэкап базы данных
+    и тушит текущие серверные процессы для остановки тарификации VRAM.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    secret = body.get("secret", "")
+    expected_secret = os.environ.get("HANDOVER_SECRET", "default_secret")
+    if secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    log.info("Передача управления принята! Запуск синхронизации базы данных...")
+
+    # Синхронизируем состояние БД с облаком в синхронном режиме (блокирующий вызов в фоне)
+    def do_sync():
+        try:
+            # Даем процессам пару секунд закончить запись, если она идет
+            time.sleep(2)
+            # Вызываем скрипт Rclone
+            sync_script = "./scripts/rclone_sync.sh"
+            if os.path.exists(sync_script):
+                log.info("Запуск scripts/rclone_sync.sh upload...")
+                res = subprocess.run(["bash", sync_script, "upload"], capture_output=True, text=True)
+                log.info(f"Rclone stdout: {res.stdout}")
+                if res.returncode != 0:
+                    log.error(f"Rclone upload error (code={res.returncode}): {res.stderr}")
+            else:
+                log.warning("scripts/rclone_sync.sh не найден!")
+        except Exception as e:
+            log.error(f"Ошибка во время финализации Rclone: {e}")
+
+        # Гасим процессы
+        log.info("Остановка процессов llama-server, telegram_bot, туннелей...")
+        os.system("pkill -f llama-server")
+        os.system("pkill -f telegram_bot")
+        os.system("pkill -f cloudflared")
+        os.system("pkill -f ngrok")
+        
+        # Сигнал для завершения keep-alive цикла ноутбука Kaggle
+        try:
+            with open("/tmp/handover_complete", "w") as f:
+                f.write("handover_done")
+            log.info("Файл /tmp/handover_complete создан.")
+        except Exception as e:
+            log.error(f"Не удалось записать файл handover: {e}")
+
+        # Завершаем текущий media_server
+        log.info("Завершение работы media_server...")
+        os.kill(os.getpid(), 15)  # SIGTERM
+
+    # Запускаем в фоновом потоке, чтобы вернуть ответ клиенту до остановки серверов
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, do_sync)
+
+    return {"status": "shutting_down", "message": "Handover acknowledged. Syncing and shutting down."}
+
+
+
 # ---------------------------------------------------------------------------
 # Direct REST API endpoints (for testing without MCP)
 # ---------------------------------------------------------------------------

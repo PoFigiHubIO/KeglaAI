@@ -45,15 +45,83 @@ def step(title: str):
     print("=" * 78)
 
 
+def register_with_cloudflare_worker(public_url: str, port: int, cfg: dict):
+    cf_url = cfg["tunnel"].get("cloudflare_worker_url") or os.environ.get("CF_WORKER_URL", "")
+    secret = os.environ.get("HANDOVER_SECRET", "default_secret")
+    if not cf_url:
+        print("[start.py] cloudflare_worker_url не настроен. Пропускаем регистрацию в KV.")
+        return
+
+    import requests
+    try:
+        payload = {}
+        if port == 8080:
+            payload["llm_url"] = public_url
+        elif port == 8081:
+            payload["media_url"] = public_url
+
+        print(f"[start.py] Регистрация URL ({public_url}) в Cloudflare Worker...")
+        res = requests.post(
+            f"{cf_url}/register",
+            json=payload,
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=15
+        )
+        if res.status_code == 200:
+            print("[start.py] ✅ URL успешно зарегистрирован в Cloudflare KV.")
+        else:
+            print(f"[start.py][error] Ошибка регистрации URL: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"[start.py][error] Ошибка подключения к Cloudflare Worker: {e}")
+
+
+def trigger_handover(cfg: dict):
+    cf_url = cfg["tunnel"].get("cloudflare_worker_url") or os.environ.get("CF_WORKER_URL", "")
+    secret = os.environ.get("HANDOVER_SECRET", "default_secret")
+    if not cf_url:
+        return
+
+    import requests
+    try:
+        # Step 1: Получаем текущие URL старых инстансов из KV
+        print("[start.py] Запрос активных URL для передачи управления...")
+        res = requests.get(f"{cf_url}/active", timeout=10)
+        if res.status_code != 200:
+            print(f"[start.py][warn] Не удалось получить активные URL: {res.status_code}")
+            return
+
+        data = res.json()
+        old_media_url = data.get("media")
+
+        if not old_media_url:
+            print("[start.py] Старый медиа-сервер не найден в KV. Передача управления не требуется.")
+            return
+
+        # Step 2: Шлём запрос завершения на старый медиа-сервер
+        print(f"[start.py] Отправка сигнала передачи управления старой ноде: {old_media_url}/v1/handover/complete ...")
+        h_res = requests.post(
+            f"{old_media_url}/v1/handover/complete",
+            json={"secret": secret},
+            timeout=15
+        )
+        if h_res.status_code == 200:
+            print("[start.py] ✅ Сигнал передачи управления успешно отправлен старой ноде.")
+        else:
+            print(f"[start.py][warn] Старая нода отклонила запрос или вернула ошибку: {h_res.status_code}")
+    except Exception as e:
+        print(f"[start.py][warn] Не удалось связаться со старой нодой для передачи управления: {e}")
+
+
 def main():
     import yaml
 
     config_path = os.environ.get("CONFIG_FILE", "config.yaml")
-    # Пробрасываем в окружение для всех дочерних процессов
     os.environ["CONFIG_FILE"] = config_path
 
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    port = cfg["server"].get("port", 8080)
 
     # --- Этап 1: анализ окружения ---
     step("ЭТАП 1/9 — Анализ окружения")
@@ -63,98 +131,176 @@ def main():
     step("ЭТАП 2/9 — Установка зависимостей")
     run(["bash", "install.sh"])
 
-    # --- Этап 3: сборка llama.cpp ---
-    step("ЭТАП 3/9 — Сборка llama.cpp (CUDA)")
-    existing_binary = "./llama.cpp/build/bin/llama-server"
-    needs_build = True
-    if os.path.exists(existing_binary):
-        # Файлы могли остаться от предыдущей сессии (Kaggle Persistence:
-        # Variables and Files), но за это время Kaggle мог обновить образ
-        # (CUDA/драйвер/glibc), а бит исполняемости мог "слететь" при
-        # восстановлении файлов между сессиями — восстанавливаем его перед
-        # проверкой. Проверяем реальным запуском, а не просто наличием файла,
-        # чтобы не упасть позже на start_server.sh.
-        try:
-            os.chmod(existing_binary, 0o755)
-        except OSError as e:
-            print(f"[start.py][warn] Не удалось выставить права на {existing_binary}: {e}")
+    # --- Этап 2.5: Скачивание БД из облака (failover) ---
+    step("ЭТАП 2.5/9 — Восстановление базы данных из облака")
+    run(["bash", "scripts/rclone_sync.sh", "download"], check=False)
 
-        try:
-            check = subprocess.run(
-                [existing_binary, "--version"], capture_output=True, timeout=30
-            )
-            binary_ok = check.returncode == 0
-        except (PermissionError, OSError) as e:
-            print(f"[start.py] {existing_binary} не запускается ({e}) — пересобираем.")
-            binary_ok = False
+    # Isolate Hugging Face cache on Kaggle persistent directory
+    os.environ["HF_HOME"] = "/kaggle/working/.cache"
 
-        if binary_ok:
-            needs_build = False
-            print(f"[start.py] {existing_binary} уже собран и рабочий, пропускаем build.sh")
-        else:
-            print(f"[start.py] {existing_binary} найден, но не запускается "
-                  f"(вероятно, Kaggle обновил образ, либо потеряны права доступа) — пересобираем.")
-    if needs_build:
-        run(["bash", "build.sh"])
+    public_url = ""
 
-    # --- Этап 4: загрузка модели ---
-    step("ЭТАП 4/9 — Загрузка GGUF-модели")
-    run([sys.executable, "download_model.py"])
+    # =========================================================================
+    # ВЕТКА ДЛЯ ВТОРОЙ МОДЕЛИ (GPU 1, порт 8081) — МЕДИА-СЕРВЕР И БОТ
+    # =========================================================================
+    if port == 8081:
+        step("ЭТАП 6-8/9 — Запуск FastAPI Media Server (GPU 1)")
+        # Очищаем старый медиа-сервер и бот
+        os.system("pkill -f media_server.py")
+        os.system("pkill -f telegram_bot.py")
+        os.system("pkill -f failover_timer.py")
 
-    # --- Этап 5: оптимальные параметры под 2xT4 ---
-    step("ЭТАП 5/9 — Автоподбор параметров запуска")
-    run([sys.executable, "scripts/optimize.py"])
+        log_f = open("logs/media_server_8081.log", "w")
+        media_proc = subprocess.Popen(
+            [sys.executable, "scripts/media_server.py"],
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+        with open("logs/media_server_8081.pid", "w") as f:
+            f.write(str(media_proc.pid))
+        print(f"[start.py] Media Server запущен (PID={media_proc.pid})")
+        time.sleep(2)
 
-    # --- Этап 6-8: запуск сервера (API + Web UI) ---
-    step("ЭТАП 6-8/9 — Запуск llama-server (OpenAI API + Web UI)")
-    run(["bash", "start_server.sh"])
+        # Запускаем туннель для порта 8081
+        step("ЭТАП 7/9 — Публикация через туннель")
+        from tunnel import start_tunnel
+        provider = cfg["tunnel"]["provider"]
+        
+        tunnel_pid_file = f"logs/tunnel_{port}.pid"
+        cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
+        ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
+        ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
+        ngrok_token = os.environ.get(ngrok_token_env, "")
 
-    # --- Этап 7: публичный туннель ---
-    step("ЭТАП 7/9 — Публикация через туннель")
-    from tunnel import start_tunnel
+        proc, public_url = start_tunnel(
+            provider,
+            port,
+            cloudflare_token=cloudflare_token,
+            cloudflare_domain=cloudflare_domain,
+            ngrok_domain=ngrok_domain,
+            ngrok_token=ngrok_token
+        )
+        with open(tunnel_pid_file, "w") as f:
+            f.write(str(proc.pid))
 
-    provider = cfg["tunnel"]["provider"]
-    port = cfg["server"]["port"]
-    
-    # Очищаем старый туннель на этом порту, если он остался
-    tunnel_pid_file = f"logs/tunnel_{port}.pid"
-    if os.path.exists(tunnel_pid_file):
-        try:
-            with open(tunnel_pid_file, "r") as f:
-                old_pid = int(f.read().strip())
-            os.kill(old_pid, 15)  # SIGTERM
-            print(f"[start.py] Остановлен старый туннель (PID={old_pid}) на порту {port}")
-            time.sleep(1)
-        except Exception:
-            pass
+        if not public_url:
+            public_url = f"http://127.0.0.1:{port}"
+        print(f"[start.py] Публичный URL медиа-сервера: {public_url}")
 
-    # Извлекаем параметры для перманентных туннелей
-    cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-    cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
-    ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
-    
-    ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
-    ngrok_token = os.environ.get(ngrok_token_env, "")
+        # Регистрация в Cloudflare KV
+        register_with_cloudflare_worker(public_url, port, cfg)
 
-    proc, public_url = start_tunnel(
-        provider,
-        port,
-        cloudflare_token=cloudflare_token,
-        cloudflare_domain=cloudflare_domain,
-        ngrok_domain=ngrok_domain,
-        ngrok_token=ngrok_token
-    )
+        # Запуск Telegram Bot
+        step("ЭТАП 8/9 — Запуск Telegram Bot Agent Loop")
+        bot_log = open("logs/telegram_bot.log", "w")
+        bot_proc = subprocess.Popen(
+            [sys.executable, "scripts/telegram_bot.py"],
+            stdout=bot_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+        with open("logs/telegram_bot.pid", "w") as f:
+            f.write(str(bot_proc.pid))
+        print(f"[start.py] Telegram Bot запущен (PID={bot_proc.pid})")
 
-    # Сохраняем PID нового туннеля
-    with open(tunnel_pid_file, "w") as f:
-        f.write(str(proc.pid))
+        # Запуск таймера авто-переключения (failover)
+        step("ЭТАП 8.5/9 — Запуск таймера авто-ротации (9h)")
+        timer_log = open("logs/failover_timer.log", "w")
+        timer_proc = subprocess.Popen(
+            [sys.executable, "scripts/failover_timer.py"],
+            stdout=timer_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+        with open("logs/failover_timer.pid", "w") as f:
+            f.write(str(timer_proc.pid))
+        print(f"[start.py] Таймер авто-ротации запущен (PID={timer_proc.pid})")
 
-    if not public_url:
-        print("[start.py][warn] Не удалось автоматически определить публичный URL. "
-              "Проверьте ./logs/tunnel_{}.log".format(port))
-        public_url = "http://127.0.0.1:{}".format(port)
+        # Так как оба GPU 0 и GPU 1 запущены и настроены, инициируем сигнал передачи управления старой ноде
+        step("ЭТАП 8.9/9 — Сигнал передачи управления (Handover)")
+        trigger_handover(cfg)
+
+    # =========================================================================
+    # ВЕТКА ДЛЯ ПЕРВОЙ МОДЕЛИ (GPU 0, порт 8080) — LLM API
+    # =========================================================================
     else:
-        print(f"[start.py] Публичный URL: {public_url}")
+        # --- Этап 3: сборка llama.cpp ---
+        step("ЭТАП 3/9 — Сборка llama.cpp (CUDA)")
+        existing_binary = "./llama.cpp/build/bin/llama-server"
+        needs_build = True
+        if os.path.exists(existing_binary):
+            try:
+                os.chmod(existing_binary, 0o755)
+            except OSError as e:
+                print(f"[start.py][warn] Не удалось выставить права на {existing_binary}: {e}")
+
+            try:
+                check = subprocess.run(
+                    [existing_binary, "--version"], capture_output=True, timeout=30
+                )
+                binary_ok = check.returncode == 0
+            except (PermissionError, OSError) as e:
+                binary_ok = False
+
+            if binary_ok:
+                needs_build = False
+                print(f"[start.py] {existing_binary} уже собран, пропускаем сборку.")
+        
+        if needs_build:
+            run(["bash", "build.sh"])
+
+        # --- Этап 4: загрузка модели ---
+        step("ЭТАП 4/9 — Загрузка GGUF-модели")
+        run([sys.executable, "download_model.py"])
+
+        # --- Этап 5: оптимальные параметры под 2xT4 ---
+        step("ЭТАП 5/9 — Автоподбор параметров запуска")
+        run([sys.executable, "scripts/optimize.py"])
+
+        # --- Этап 6-8: запуск сервера (API + Web UI) ---
+        step("ЭТАП 6-8/9 — Запуск llama-server (OpenAI API + Web UI)")
+        run(["bash", "start_server.sh"])
+
+        # --- Этап 7: публичный туннель ---
+        step("ЭТАП 7/9 — Публикация через туннель")
+        from tunnel import start_tunnel
+
+        provider = cfg["tunnel"]["provider"]
+        tunnel_pid_file = f"logs/tunnel_{port}.pid"
+        if os.path.exists(tunnel_pid_file):
+            try:
+                with open(tunnel_pid_file, "r") as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 15)
+                time.sleep(1)
+            except Exception:
+                pass
+
+        cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
+        ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
+        ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
+        ngrok_token = os.environ.get(ngrok_token_env, "")
+
+        proc, public_url = start_tunnel(
+            provider,
+            port,
+            cloudflare_token=cloudflare_token,
+            cloudflare_domain=cloudflare_domain,
+            ngrok_domain=ngrok_domain,
+            ngrok_token=ngrok_token
+        )
+        with open(tunnel_pid_file, "w") as f:
+            f.write(str(proc.pid))
+
+        if not public_url:
+            public_url = f"http://127.0.0.1:{port}"
+        print(f"[start.py] Публичный URL LLM: {public_url}")
+
+        # Регистрация в Cloudflare KV
+        register_with_cloudflare_worker(public_url, port, cfg)
 
     # --- Этап 9: генерация конфигов VS Code / MCP с подставленным URL ---
     step("ЭТАП 9/9 — Генерация конфигов для VS Code")
@@ -162,6 +308,7 @@ def main():
 
     # --- Итоговая сводка ---
     print_summary(public_url, cfg)
+
 
 
 def generate_vscode_configs(public_url: str, cfg: dict):
