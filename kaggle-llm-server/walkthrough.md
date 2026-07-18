@@ -217,3 +217,19 @@ We created a persistent SQLite-backed Telegram Bot agent:
    - `uninstall_mcp_server(name)`: Stops and removes server.
 4. **Premium Media Upload**: Intercepts `generate_image` and `generate_video` outputs. If a local file path is generated (on the shared Kaggle filesystem), the bot automatically uploads it to Telegram as a Photo/Video, returning only metadata to the LLM to save token context.
 5. **Security & Whitelist**: Whitelists users, clears history via `/clear`, and exposes commands (`/mcp_list`, `/mcp_search`, `/mcp_install`, `/mcp_enable`, `/mcp_disable`).
+
+---
+
+## 14. Stage 4: Seamless 24/7 Failover Orchestrator
+
+### Problem Description
+Operating 24/7 on Kaggle requires rotating sessions every 9 hours across 7 accounts (due to the 12-hour session limit and 30-hour weekly GPU quota per account). This rotation must synchronise DB states, preserve client connections without changing URLs, and shut down older instances automatically to stop VRAM billing.
+
+### Changes Made
+We implemented the full failover rotation loop:
+1. **Cloudflare Worker Static Proxy**: In **[scripts/cf_worker.js](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/cf_worker.js)**, we route public OpenAI client requests to the active Kaggle instance URL stored in Cloudflare KV. Added `/active` query and `/register` endpoints.
+2. **SQLite State Synchronizer**: In **[scripts/rclone_sync.sh](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/rclone_sync.sh)**, we use Rclone configured entirely via dynamic environment variables (Yandex Disk WebDAV or Google Drive API) to download the SQLite database on startup and upload it upon handover completion.
+3. **Media Server Handover Endpoint**: In **[scripts/media_server.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/media_server.py)**, we added `/v1/handover/complete`. When called, it executes the final database upload, kills all local backend/tunnel processes, and writes a handover completion flag to disk.
+4. **Uptime Rotation Timer**: In **[scripts/failover_timer.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/failover_timer.py)**, we run a background loop that sleeps for 8 hours 50 minutes, writes next account's credentials to `~/.kaggle/kaggle.json`, generates metadata, and runs `kaggle kernels push` to boot the next node.
+5. **Start Orchestrator Integration**: In **[start.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/start.py)**, we pull the DB from cloud on startup, skip normal LLM steps on port 8081 (media-server bypass), register endpoints in Cloudflare KV via POST `/register`, start the timer, and trigger the handover signal to the previous node.
+6. **Automated Shutdown Hook**: In **[kaggle_run_all.ipynb](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/notebooks/kaggle_run_all.ipynb)**, we modified the keep-alive loop to monitor for the presence of `/tmp/handover_complete`. If detected, the loop terminates, closing the cell and stopping Kaggle billable GPU hours immediately.
