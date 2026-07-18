@@ -683,33 +683,364 @@ async def api_generate_video(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# SSE MCP Protocol endpoints — STUBS
+# MCP SSE Protocol — Full Implementation
 # ---------------------------------------------------------------------------
-# These will be implemented in Stage 2, subtask 5.
-# The MCP protocol requires:
-#   GET  /sse       — SSE stream for server-initiated messages
-#   POST /messages  — JSON-RPC endpoint for client requests
+# MCP (Model Context Protocol) SSE transport specification:
+#   - Client connects to GET /sse and receives an `endpoint` event
+#     containing the URL for POST /messages?session_id=<id>
+#   - Client sends JSON-RPC 2.0 requests to POST /messages
+#   - Server pushes responses back through the SSE stream as `message` events
+#   - Lifecycle: initialize → notifications/initialized → tools/list → tools/call
+#
+# Reference: https://modelcontextprotocol.io/specification/2024-11-05/transport
+
+# Per-session state: maps session_id → asyncio.Queue of outbound SSE events
+_mcp_sessions: dict[str, asyncio.Queue] = {}
+
+
+# -- Tool definitions (single source of truth) --------------------------------
+
+MCP_TOOLS = [
+    {
+        "name": "generate_image",
+        "description": (
+            "Генерирует изображение по текстовому описанию с помощью модели "
+            "FLUX.1 Dev. Возвращает base64-encoded PNG изображение."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Текстовое описание изображения для генерации",
+                },
+                "width": {
+                    "type": "integer",
+                    "description": "Ширина изображения в пикселях (256-2048, по умолчанию 1024)",
+                    "default": 1024,
+                },
+                "height": {
+                    "type": "integer",
+                    "description": "Высота изображения в пикселях (256-2048, по умолчанию 1024)",
+                    "default": 1024,
+                },
+                "steps": {
+                    "type": "integer",
+                    "description": "Количество шагов диффузии (по умолчанию 20)",
+                    "default": 20,
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "description": "Сила следования промпту (по умолчанию 3.5)",
+                    "default": 3.5,
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Seed для воспроизводимости (-1 = случайный)",
+                    "default": -1,
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "generate_video",
+        "description": (
+            "Генерирует короткое видео по текстовому описанию (T2V) или "
+            "на основе входного изображения (I2V) с помощью модели Wan 2.1. "
+            "Возвращает base64-encoded MP4 видео."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Текстовое описание видео для генерации",
+                },
+                "image_base64": {
+                    "type": "string",
+                    "description": "Base64-encoded исходное изображение для режима Image-to-Video",
+                },
+                "num_frames": {
+                    "type": "integer",
+                    "description": "Количество кадров (17-161, по умолчанию 81 ≈ 5 сек)",
+                    "default": 81,
+                },
+                "fps": {
+                    "type": "integer",
+                    "description": "Частота кадров (по умолчанию 16)",
+                    "default": 16,
+                },
+                "steps": {
+                    "type": "integer",
+                    "description": "Количество шагов диффузии (по умолчанию 30)",
+                    "default": 30,
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "description": "Сила следования промпту (по умолчанию 5.0)",
+                    "default": 5.0,
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Seed для воспроизводимости (-1 = случайный)",
+                    "default": -1,
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
+]
+
+
+# -- Internal tool dispatch (avoids FakeRequest hack) -------------------------
+
+async def _call_generate_image(args: dict) -> list[dict]:
+    """
+    Execute image generation and return MCP content blocks.
+    Separated from the REST endpoint to avoid async json() issues.
+    """
+    prompt = args.get("prompt", "")
+    width = args.get("width", DEFAULT_WIDTH)
+    height = args.get("height", DEFAULT_HEIGHT)
+    steps = args.get("steps", DEFAULT_STEPS)
+    guidance = args.get("guidance_scale", DEFAULT_GUIDANCE)
+    seed = args.get("seed", -1)
+
+    if not prompt:
+        return [{"type": "text", "text": "Error: prompt is required"}]
+
+    width = max(256, min(2048, (width // 8) * 8))
+    height = max(256, min(2048, (height // 8) * 8))
+
+    log.info(
+        f"MCP generate_image: prompt='{prompt[:80]}...', "
+        f"{width}x{height}, steps={steps}"
+    )
+
+    pipe = await vram.get_image_pipe()
+    image_id = str(uuid.uuid4())[:8]
+
+    try:
+        import torch
+
+        if seed < 0:
+            seed = torch.randint(0, 2**32, (1,)).item()
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        def _generate():
+            result = pipe(
+                prompt=prompt,
+                width=width,
+                height=height,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=generator,
+            )
+            return result.images[0]
+
+        loop = asyncio.get_event_loop()
+        image = await loop.run_in_executor(None, _generate)
+
+        # Save to disk
+        filepath = OUTPUT_DIR / f"{image_id}.png"
+        image.save(filepath, format="PNG")
+
+        # Encode to base64
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        log.info(f"MCP generate_image: done, id={image_id}, seed={seed}")
+
+        return [
+            {
+                "type": "image",
+                "data": b64_data,
+                "mimeType": "image/png",
+            },
+            {
+                "type": "text",
+                "text": json.dumps({
+                    "id": image_id,
+                    "seed": seed,
+                    "width": width,
+                    "height": height,
+                    "steps": steps,
+                    "file": str(filepath),
+                }),
+            },
+        ]
+
+    except Exception as e:
+        log.error(f"MCP generate_image error: {e}", exc_info=True)
+        return [{"type": "text", "text": f"Error: {str(e)}"}]
+
+
+async def _call_generate_video(args: dict) -> list[dict]:
+    """
+    Execute video generation and return MCP content blocks.
+    """
+    prompt = args.get("prompt", "")
+    image_b64 = args.get("image_base64", "")
+    num_frames = args.get("num_frames", DEFAULT_VIDEO_FRAMES)
+    fps = args.get("fps", DEFAULT_VIDEO_FPS)
+    steps = args.get("steps", DEFAULT_VIDEO_STEPS)
+    guidance = args.get("guidance_scale", DEFAULT_VIDEO_GUIDANCE)
+    seed = args.get("seed", -1)
+
+    if not prompt:
+        return [{"type": "text", "text": "Error: prompt is required"}]
+
+    num_frames = max(17, min(161, num_frames))
+
+    log.info(f"MCP generate_video: prompt='{prompt[:80]}...', frames={num_frames}")
+
+    pipe = await vram.get_video_pipe()
+    video_id = str(uuid.uuid4())[:8]
+
+    try:
+        import torch
+        from PIL import Image as PILImage
+        from diffusers.utils import export_to_video
+
+        if seed < 0:
+            seed = torch.randint(0, 2**32, (1,)).item()
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        # Decode input image for I2V
+        input_image = None
+        is_i2v = getattr(pipe, '_is_i2v', False)
+        if image_b64 and is_i2v:
+            try:
+                img_bytes = base64.b64decode(image_b64)
+                input_image = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
+                input_image = input_image.resize((832, 480), PILImage.LANCZOS)
+            except Exception as e:
+                log.warning(f"  Failed to decode image_base64: {e}")
+
+        def _generate():
+            if is_i2v and input_image is not None:
+                output = pipe(
+                    image=input_image, prompt=prompt,
+                    num_frames=num_frames, num_inference_steps=steps,
+                    guidance_scale=guidance, generator=generator,
+                )
+            elif is_i2v:
+                blank = PILImage.new("RGB", (832, 480), (255, 255, 255))
+                output = pipe(
+                    image=blank, prompt=prompt,
+                    num_frames=num_frames, num_inference_steps=steps,
+                    guidance_scale=guidance, generator=generator,
+                )
+            else:
+                output = pipe(
+                    prompt=prompt,
+                    num_frames=num_frames, num_inference_steps=steps,
+                    guidance_scale=guidance, generator=generator,
+                )
+            return output.frames[0]
+
+        loop = asyncio.get_event_loop()
+        frames = await loop.run_in_executor(None, _generate)
+
+        # Export raw MP4
+        raw_path = OUTPUT_DIR / f"{video_id}_raw.mp4"
+        export_to_video(frames, str(raw_path), fps=fps)
+
+        # FFmpeg compression
+        final_path = raw_path
+        comp_path = OUTPUT_DIR / f"{video_id}.mp4"
+        try:
+            res = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(raw_path),
+                 "-vcodec", "libx265", "-crf", "28",
+                 "-preset", "fast", "-pix_fmt", "yuv420p",
+                 str(comp_path)],
+                capture_output=True, timeout=120,
+            )
+            if res.returncode == 0:
+                final_path = comp_path
+                raw_path.unlink(missing_ok=True)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        with open(final_path, "rb") as f:
+            b64_data = base64.b64encode(f.read()).decode("utf-8")
+
+        duration_sec = round(num_frames / fps, 1)
+        log.info(f"MCP generate_video: done, id={video_id}, seed={seed}")
+
+        return [
+            {
+                "type": "text",
+                "text": json.dumps({
+                    "id": video_id,
+                    "seed": seed,
+                    "duration_seconds": duration_sec,
+                    "num_frames": num_frames,
+                    "fps": fps,
+                    "mode": "i2v" if (is_i2v and input_image) else "t2v",
+                    "size_kb": round(final_path.stat().st_size / 1024, 1),
+                    "file": str(final_path),
+                    "video_base64_length": len(b64_data),
+                }),
+            },
+        ]
+
+    except Exception as e:
+        log.error(f"MCP generate_video error: {e}", exc_info=True)
+        return [{"type": "text", "text": f"Error: {str(e)}"}]
+
+
+# Tool dispatch table
+_TOOL_HANDLERS = {
+    "generate_image": _call_generate_image,
+    "generate_video": _call_generate_video,
+}
+
+
+# -- SSE endpoint -------------------------------------------------------------
 
 @app.get("/sse")
-async def sse_endpoint():
+async def sse_endpoint(request: Request):
     """
-    SSE MCP endpoint stub.
+    MCP SSE transport endpoint.
 
-    TODO (Stage 2, subtask 5): Implement full MCP SSE transport using
-    the official `mcp` Python SDK. This endpoint will:
-    1. Open an SSE stream
-    2. Send an 'endpoint' event with the /messages URL
-    3. Stream tool results back to the MCP client
+    Opens a persistent SSE stream for a new MCP session. Sends an initial
+    `endpoint` event with the session-specific messages URL, then streams
+    `message` events containing JSON-RPC responses as they are produced
+    by tools/call invocations.
+
+    The session is cleaned up when the client disconnects.
     """
+    session_id = str(uuid.uuid4())
+    queue: asyncio.Queue = asyncio.Queue()
+    _mcp_sessions[session_id] = queue
+
+    log.info(f"MCP SSE: новая сессия {session_id[:8]}...")
+
     async def event_stream():
-        # Send initial endpoint event (MCP protocol requirement)
-        messages_url = f"http://127.0.0.1:{PORT}/messages"
-        yield f"event: endpoint\ndata: {messages_url}\n\n"
+        try:
+            # First event: tell the client where to POST messages
+            messages_url = f"/messages?session_id={session_id}"
+            yield f"event: endpoint\ndata: {messages_url}\n\n"
 
-        # Keep the connection alive with periodic heartbeats
-        while True:
-            yield f"event: heartbeat\ndata: {json.dumps({'time': time.time()})}\n\n"
-            await asyncio.sleep(15)
+            # Stream responses from the queue
+            while True:
+                try:
+                    # Wait for a message with timeout for keepalive
+                    msg = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"event: message\ndata: {json.dumps(msg)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive comment to prevent proxy timeouts
+                    yield f": keepalive {time.time()}\n\n"
+                except asyncio.CancelledError:
+                    break
+        finally:
+            # Cleanup session on disconnect
+            _mcp_sessions.pop(session_id, None)
+            log.info(f"MCP SSE: сессия {session_id[:8]}... закрыта")
 
     return StreamingResponse(
         event_stream(),
@@ -722,161 +1053,161 @@ async def sse_endpoint():
     )
 
 
-@app.post("/messages")
-async def mcp_messages(request: Request):
-    """
-    MCP JSON-RPC message handler stub.
+# -- Messages endpoint --------------------------------------------------------
 
-    TODO (Stage 2, subtask 5): Implement full JSON-RPC 2.0 handling for:
-    - initialize
-    - tools/list  (return generate_image and generate_video schemas)
-    - tools/call  (dispatch to the appropriate pipeline)
+@app.post("/messages")
+async def mcp_messages(request: Request, session_id: str = ""):
+    """
+    MCP JSON-RPC 2.0 message handler.
+
+    Receives JSON-RPC requests from the MCP client, processes them,
+    and pushes responses to the session's SSE queue. Returns 202 Accepted
+    for async tool calls, or the response directly for synchronous methods.
     """
     body = await request.json()
     method = body.get("method", "")
     req_id = body.get("id", None)
+    params = body.get("params", {})
 
-    log.info(f"MCP message: method={method}, id={req_id}")
+    log.info(f"MCP [{session_id[:8] if session_id else 'no-session'}]: "
+             f"method={method}, id={req_id}")
 
-    # Minimal stub responses for MCP protocol handshake
+    # Validate session exists (if provided)
+    queue = _mcp_sessions.get(session_id)
+    if session_id and queue is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0", "id": req_id,
+                "error": {"code": -32600, "message": "Invalid session_id"},
+            },
+        )
+
+    # --- Handle each MCP method ---
+
     if method == "initialize":
-        return JSONResponse({
+        response = {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                },
                 "serverInfo": {
                     "name": "kaggle-media-server",
-                    "version": "0.1.0",
+                    "version": "0.2.0",
                 },
             },
-        })
+        }
+        if queue:
+            await queue.put(response)
+            return JSONResponse(status_code=202, content={"status": "accepted"})
+        return JSONResponse(response)
+
+    elif method == "notifications/initialized":
+        # Client acknowledges initialization — no response needed
+        log.info(f"MCP: клиент инициализирован (session={session_id[:8]}...)")
+        return JSONResponse(status_code=202, content={"status": "accepted"})
+
+    elif method == "ping":
+        response = {"jsonrpc": "2.0", "id": req_id, "result": {}}
+        if queue:
+            await queue.put(response)
+            return JSONResponse(status_code=202, content={"status": "accepted"})
+        return JSONResponse(response)
 
     elif method == "tools/list":
-        return JSONResponse({
+        response = {
             "jsonrpc": "2.0",
             "id": req_id,
-            "result": {
-                "tools": [
-                    {
-                        "name": "generate_image",
-                        "description": (
-                            "Генерирует изображение по текстовому описанию. "
-                            "Возвращает base64-encoded PNG."
-                        ),
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": {
-                                    "type": "string",
-                                    "description": "Описание изображения для генерации",
-                                },
-                                "width": {
-                                    "type": "integer",
-                                    "description": "Ширина в пикселях (по умолчанию 1024)",
-                                    "default": 1024,
-                                },
-                                "height": {
-                                    "type": "integer",
-                                    "description": "Высота в пикселях (по умолчанию 1024)",
-                                    "default": 1024,
-                                },
-                            },
-                            "required": ["prompt"],
-                        },
-                    },
-                    {
-                        "name": "generate_video",
-                        "description": (
-                            "Генерирует короткое видео по текстовому описанию "
-                            "или на основе входного изображения (Image-to-Video)."
-                        ),
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": {
-                                    "type": "string",
-                                    "description": "Описание видео для генерации",
-                                },
-                                "image_base64": {
-                                    "type": "string",
-                                    "description": "Base64-encoded исходное изображение (для I2V)",
-                                },
-                                "seconds": {
-                                    "type": "integer",
-                                    "description": "Длительность видео в секундах (по умолчанию 3)",
-                                    "default": 3,
-                                },
-                            },
-                            "required": ["prompt"],
-                        },
-                    },
-                ]
-            },
-        })
+            "result": {"tools": MCP_TOOLS},
+        }
+        if queue:
+            await queue.put(response)
+            return JSONResponse(status_code=202, content={"status": "accepted"})
+        return JSONResponse(response)
 
     elif method == "tools/call":
-        tool_name = body.get("params", {}).get("name", "")
-        tool_args = body.get("params", {}).get("arguments", {})
-        log.info(f"MCP tools/call: {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:100]})")
+        tool_name = params.get("name", "")
+        tool_args = params.get("arguments", {})
 
-        # Dispatch to the appropriate handler
-        if tool_name == "generate_image":
-            result = await api_generate_image(
-                type("FakeRequest", (), {"json": lambda self: tool_args})()
-            )
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result.body.decode()
-                                               if hasattr(result, 'body') else str(result)),
-                        }
-                    ]
-                },
-            })
-
-        elif tool_name == "generate_video":
-            result = await api_generate_video(
-                type("FakeRequest", (), {"json": lambda self: tool_args})()
-            )
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result.body.decode()
-                                               if hasattr(result, 'body') else str(result)),
-                        }
-                    ]
-                },
-            })
-
-        else:
-            return JSONResponse({
+        handler = _TOOL_HANDLERS.get(tool_name)
+        if handler is None:
+            error_response = {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "error": {
                     "code": -32601,
                     "message": f"Unknown tool: {tool_name}",
                 },
-            })
+            }
+            if queue:
+                await queue.put(error_response)
+                return JSONResponse(status_code=202, content={"status": "accepted"})
+            return JSONResponse(error_response)
 
-    # Unknown method
-    return JSONResponse({
+        log.info(f"MCP tools/call: {tool_name}"
+                 f"({json.dumps(tool_args, ensure_ascii=False)[:100]})")
+
+        # Execute tool asynchronously — push result to SSE when done
+        async def _execute_and_push():
+            try:
+                content_blocks = await handler(tool_args)
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"content": content_blocks},
+                }
+            except Exception as e:
+                log.error(f"MCP tool execution error: {e}", exc_info=True)
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"Error: {str(e)}"}],
+                        "isError": True,
+                    },
+                }
+            if queue:
+                await queue.put(response)
+
+        # Launch tool execution as a background task
+        if queue:
+            asyncio.create_task(_execute_and_push())
+            return JSONResponse(status_code=202, content={"status": "accepted"})
+        else:
+            # No SSE session — synchronous fallback (for direct testing)
+            try:
+                content_blocks = await handler(tool_args)
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"content": content_blocks},
+                })
+            except Exception as e:
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"Error: {str(e)}"}],
+                        "isError": True,
+                    },
+                })
+
+    # --- Unknown method ---
+    error_response = {
         "jsonrpc": "2.0",
         "id": req_id,
         "error": {
             "code": -32601,
             "message": f"Method not found: {method}",
         },
-    })
+    }
+    if queue:
+        await queue.put(error_response)
+        return JSONResponse(status_code=202, content={"status": "accepted"})
+    return JSONResponse(error_response)
 
 
 # ---------------------------------------------------------------------------
