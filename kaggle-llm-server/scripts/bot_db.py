@@ -402,9 +402,15 @@ class BotDatabase:
                 url="http://127.0.0.1:8081/sse",
                 description="GPU 1 media server: generate_image (FLUX.1 Dev), generate_video (Wan 2.1)",
                 enabled=True,
-                auto_start=False,  # Started separately by start.py
+                auto_start=True,  # Automatically connect on boot
             )
             imported += 1
+        else:
+            # Enforce auto_start=1 for media-server in existing databases
+            self._conn.execute(
+                "UPDATE mcp_servers SET auto_start = 1 WHERE name = 'media-server'"
+            )
+            self._conn.commit()
 
         return imported
 
