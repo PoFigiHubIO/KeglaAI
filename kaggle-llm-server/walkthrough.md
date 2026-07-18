@@ -233,3 +233,22 @@ We implemented the full failover rotation loop:
 4. **Uptime Rotation Timer**: In **[scripts/failover_timer.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/failover_timer.py)**, we run a background loop that sleeps for 8 hours 50 minutes, writes next account's credentials to `~/.kaggle/kaggle.json`, generates metadata, and runs `kaggle kernels push` to boot the next node.
 5. **Start Orchestrator Integration**: In **[start.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/start.py)**, we pull the DB from cloud on startup, skip normal LLM steps on port 8081 (media-server bypass), register endpoints in Cloudflare KV via POST `/register`, start the timer, and trigger the handover signal to the previous node.
 6. **Automated Shutdown Hook**: In **[kaggle_run_all.ipynb](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/notebooks/kaggle_run_all.ipynb)**, we modified the keep-alive loop to monitor for the presence of `/tmp/handover_complete`. If detected, the loop terminates, closing the cell and stopping Kaggle billable GPU hours immediately.
+
+---
+
+## 15. Stage 5: LoRA Hot-Swapping & Process Warden
+
+### Problem Description
+To allow dynamic visual customization (custom styles, characters, or text layouts) in FLUX.1 Dev without modifying the main weights or restarting the server, and to ensure high availability of active MCP tools by automatically restarting failed or unresponsive MCP processes in the background.
+
+### Changes Made
+We implemented dynamic styling and process recovery supervisor loops:
+1. **Dynamic LoRA Loader**: Modified `VRAMManager` in **[scripts/media_server.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/media_server.py)** to support downloading style LoRAs on the fly. It caches them in `/kaggle/working/loras/`, unloads previous weights using `pipe.unload_lora()`, and fuses the new weights with `pipe.fuse_lora(lora_scale=scale)`. It supports:
+   - Direct HTTP/HTTPS safetensors URLs.
+   - Hugging Face repository IDs (e.g. `owner/repo-name`), resolving the `.safetensors` file automatically.
+2. **LoRA Hot-Swap MCP Tool**: Exposed `load_style_lora(lora_name_or_url, scale)` directly as an MCP tool, enabling the LLM itself to dynamically load visual styles upon user request. Added `/api/load_lora` REST endpoint for external control.
+3. **VRAM Swap Compatibility**: The active LoRA config is tracked inside `VRAMManager`, ensuring that if the pipeline is swapped to Wan and back to FLUX, the active style is automatically re-applied.
+4. **Process Warden**: Refactored `MCPOrchestrator._run_server_loop()` in **[scripts/telegram_bot.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/telegram_bot.py)**. If a stdio process crashes or a connection drops, the bot:
+   - Sets the database status.
+   - Triggers up to 3 automatic restart attempts in the background with exponential backoffs (5s, 15s, 30s).
+   - Resets the restart counter upon a successful connection, preventing process leaks or permanently dead tools.
