@@ -1,7 +1,9 @@
 model:
   source: gdrive
-  repo_id: HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive
-  filename: Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf
+  # repo_id: HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive
+  # filename: Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf
+  repo_id: llmfan46/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-uncensored-heretic-GGUF
+  filename: gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-uncensored-heretic-Q6_K.gguf
   direct_url: ''
   gdrive_file_id: '1uhyPhimt7FzXYkbrnzQqiEl5CdJgEKoO'
   hf_token_env: HF_TOKEN
@@ -9,7 +11,10 @@ model:
   verify_sha256: false
   sha256: ''
   mmproj_enabled: true
-  mmproj_filename: mmproj-Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-f16.gguf
+  # mmproj_repo_id: HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive
+  # mmproj_filename: mmproj-Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-f16.gguf
+  mmproj_repo_id: llmfan46/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-uncensored-heretic-GGUF
+  mmproj_filename: gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-uncensored-heretic-mmproj-F16.gguf
   mmproj_sha256: ''
   mmproj_gdrive_file_id: '169SqDbP2RATA70frICfx-LRfnw5T6_MC'
 llama_cpp:

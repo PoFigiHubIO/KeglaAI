@@ -67,15 +67,15 @@ PORT = int(os.environ.get("MEDIA_PORT", "8081"))
 OUTPUT_DIR = Path(os.environ.get("MEDIA_OUTPUT_DIR", "./output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# FLUX.1 Dev model configuration
+# FLUX.1 Dev/Schnell model configuration
 FLUX_MODEL_ID = os.environ.get(
-    "FLUX_MODEL_ID", "black-forest-labs/FLUX.1-dev"
+    "FLUX_MODEL_ID", "black-forest-labs/FLUX.1-schnell"
 )
 FLUX_LORA_ID = os.environ.get(
-    "FLUX_LORA_ID", "aiMaDi/aidmaNSFWunlock"
+    "FLUX_LORA_ID", ""
 )
 FLUX_LORA_WEIGHT_NAME = os.environ.get(
-    "FLUX_LORA_WEIGHT_NAME", "aidmaNSFWunlock_flux_lora.safetensors"
+    "FLUX_LORA_WEIGHT_NAME", ""
 )
 FLUX_LORA_SCALE = float(os.environ.get("FLUX_LORA_SCALE", "0.8"))
 
@@ -87,10 +87,10 @@ DEFAULT_GUIDANCE = 3.5
 
 # Wan 2.1 video model configuration
 WAN_MODEL_ID = os.environ.get(
-    "WAN_MODEL_ID", "Wan-AI/Wan2.1-I2V-14B-480P"
+    "WAN_MODEL_ID", "Wan-Video/Wan2.1-I2V-14B-480P"
 )
 WAN_T2V_MODEL_ID = os.environ.get(
-    "WAN_T2V_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B"
+    "WAN_T2V_MODEL_ID", "Wan-Video/Wan2.1-T2V-1.3B"
 )
 
 # Defaults for video generation
