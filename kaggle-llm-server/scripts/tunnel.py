@@ -163,7 +163,7 @@ def _wait_for_url(log_path: str, pattern: re.Pattern, timeout: int = 45):
 def start_tunnel(provider: str, port: int, cloudflare_token: str = "", cloudflare_domain: str = "", ngrok_domain: str = "", ngrok_token: str = ""):
     provider = provider.lower()
     log_path = f"./logs/tunnel_{port}.log"
-    if provider == "cloudflared":
+    if provider == "cloudflared" or provider == "cloudflare":
         return start_cloudflared(port, log_path, cloudflare_token, cloudflare_domain)
     if provider == "pinggy":
         return start_pinggy(port, log_path)
