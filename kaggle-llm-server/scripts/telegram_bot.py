@@ -866,15 +866,29 @@ async def run_bot():
         log.warning(f"Failed to set command menu: {e}")
 
     log.info("Bot is polling for updates...")
-    try:
-        await app.run_polling(
+    async with app:
+        await app.start()
+        await app.updater.start_polling(
             drop_pending_updates=True,
             allowed_updates=["message"],
         )
-    finally:
-        log.info("Shutting down bot. Stopping all MCP servers...")
-        await orchestrator.stop_all()
-        db.close()
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            pass
+        finally:
+            log.info("Shutting down bot. Stopping all MCP servers...")
+            try:
+                await app.updater.stop()
+            except Exception:
+                pass
+            try:
+                await app.stop()
+            except Exception:
+                pass
+            await orchestrator.stop_all()
+            db.close()
 
 
 if __name__ == "__main__":
