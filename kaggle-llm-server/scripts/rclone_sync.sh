@@ -32,7 +32,7 @@ if [[ "$CLOUD_PROVIDER" == "yadisk" || "$CLOUD_PROVIDER" == "yandex" ]]; then
     if [[ -n "$YANDEX_TOKEN" ]]; then
         # Если передан сырой токен (не JSON), оборачиваем его для Rclone
         if [[ "$YANDEX_TOKEN" != \{* ]]; then
-            YANDEX_TOKEN="{\"access_token\":\"$YANDEX_TOKEN\",\"expiry\":\"0001-01-01T00:00:00Z\"}"
+            YANDEX_TOKEN="{\"access_token\":\"$YANDEX_TOKEN\",\"token_type\":\"Bearer\",\"expiry\":\"2036-01-01T00:00:00Z\"}"
         fi
         # Yandex Disk native API config (Free Tier WebDAV bypass!)
         export RCLONE_CONFIG_BACKUP_TYPE=yandex
