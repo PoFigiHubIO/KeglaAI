@@ -44,7 +44,7 @@
 
 ## 3. Настройка секретов в Kaggle (Circular Chain)
 
-Для создания циклической цепочки 24/7 у вас должно быть два Kaggle-аккаунта (обозначим их как **Account A** и **Account B**). Ноутбук на обоих аккаунтах должен иметь имя `keglaai`.
+Для создания циклической цепочки 24/7 у вас должно быть два Kaggle-аккаунта (обозначим их как **Account A** и **Account B**). Ноутбук на обоих аккаунтах должен иметь имя `Keglya_AI`.
 
 Перейдите в редактор ноутбука на каждом аккаунте в меню **Add-ons > Secrets** и введите следующие секреты:
 
@@ -61,7 +61,7 @@
 | `ROTATION_TIME_SECONDS` | `600` | Время работы ноды (10 минут) |
 | `NEXT_KAGGLE_USERNAME` | *Юзернейм от **Account B*** | Имя целевого аккаунта |
 | `NEXT_KAGGLE_KEY` | *API Ключ от **Account B*** | API Ключ целевого аккаунта |
-| `NEXT_KAGGLE_SLUG` | `keglaai` | Имя ноутбука (всегда `keglaai`) |
+| `NEXT_KAGGLE_SLUG` | `Keglya_AI` | Имя ноутбука (всегда `Keglya_AI`) |
 
 ### Таблица секретов для Account B:
 
@@ -76,7 +76,7 @@
 | `ROTATION_TIME_SECONDS` | `600` | Время работы ноды (10 минут) |
 | `NEXT_KAGGLE_USERNAME` | *Юзернейм от **Account A*** | Имя целевого аккаунта |
 | `NEXT_KAGGLE_KEY` | *API Ключ от **Account A*** | API Ключ целевого аккаунта |
-| `NEXT_KAGGLE_SLUG` | `keglaai` | Имя ноутбука (всегда `keglaai`) |
+| `NEXT_KAGGLE_SLUG` | `Keglya_AI` | Имя ноутбука (всегда `Keglya_AI`) |
 
 ---
 
