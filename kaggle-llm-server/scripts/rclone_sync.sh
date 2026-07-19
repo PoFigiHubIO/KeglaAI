@@ -14,8 +14,8 @@ log() { echo -e "\033[1;32m[rclone-sync]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[rclone-sync][warn]\033[0m $*"; }
 
 MODE="${1:-}"
-if [[ "$MODE" != "download" && "$MODE" != "upload" ]]; then
-    echo "Usage: $0 {download|upload}"
+if [[ "$MODE" != "download" && "$MODE" != "upload" && "$MODE" != "upload_signal" && "$MODE" != "check_signal" && "$MODE" != "delete_signal" ]]; then
+    echo "Usage: $0 {download|upload|upload_signal|check_signal|delete_signal}"
     exit 1
 fi
 
@@ -24,12 +24,12 @@ CLOUD_PROVIDER="${RCLONE_PROVIDER:-yadisk}" # yadisk | gdrive
 REMOTE_NAME="backup"
 
 # Configure Rclone via environment dynamically
-if [[ "$CLOUD_PROVIDER" == "yadisk" ]]; then
-    YANDEX_USER="${YANDEX_USER:-}"
-    YANDEX_PASSWORD="${YANDEX_PASSWORD:-}"
+if [[ "$CLOUD_PROVIDER" == "yadisk" || "$CLOUD_PROVIDER" == "yandex" ]]; then
+    YANDEX_USER="${YANDEX_USER:-${RCLONE_USER:-}}"
+    YANDEX_PASSWORD="${YANDEX_PASSWORD:-${RCLONE_PASS:-}}"
     
     if [[ -z "$YANDEX_USER" || -z "$YANDEX_PASSWORD" ]]; then
-        warn "YANDEX_USER or YANDEX_PASSWORD is not set. Skipping sync."
+        warn "YANDEX_USER (or RCLONE_USER) / YANDEX_PASSWORD (or RCLONE_PASS) is not set. Skipping sync."
         exit 0
     fi
     
@@ -84,4 +84,20 @@ elif [[ "$MODE" == "upload" ]]; then
     else
         warn "Database file '$DB_FILE' not found. Nothing to upload."
     fi
+elif [[ "$MODE" == "upload_signal" ]]; then
+    log "Uploading handover signal..."
+    mkdir -p logs
+    echo "ready" > "logs/handover.signal"
+    rclone copy "logs/handover.signal" "$REMOTE_PATH/"
+    log "Handover signal successfully uploaded."
+elif [[ "$MODE" == "check_signal" ]]; then
+    if rclone lsf "$REMOTE_PATH/handover.signal" >/dev/null 2>&1; then
+        exit 0
+    else
+        exit 1
+    fi
+elif [[ "$MODE" == "delete_signal" ]]; then
+    log "Deleting handover signal from cloud..."
+    rclone deletefile "$REMOTE_PATH/handover.signal" >/dev/null 2>&1 || true
+    log "Handover signal deleted."
 fi

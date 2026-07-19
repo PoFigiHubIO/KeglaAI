@@ -123,7 +123,39 @@ async def main():
     # Attempt to trigger the next node in the ring
     success = await trigger_next_node()
     if success:
-        log.info("Next node is booting up. Current node will wait for handover/complete signal from the new node.")
+        log.info("Next node is booting up. Current node will poll cloud storage and local signals for handover...")
+        
+        # Poll for handover signal (every 10 seconds, up to 15 minutes)
+        for i in range(90):
+            await asyncio.sleep(10)
+            
+            # Check local handover flag (written if HTTP endpoint succeeds)
+            if os.path.exists("/tmp/handover_complete"):
+                log.info("Local handover complete flag detected. Exiting timer.")
+                break
+                
+            # Check cloud storage signal (fallback for Cloudflare Tunnels direct mode)
+            try:
+                res = subprocess.run(
+                    ["bash", "scripts/rclone_sync.sh", "check_signal"],
+                    capture_output=True, text=True, timeout=15
+                )
+                if res.returncode == 0:
+                    log.info("🔔 Handover signal file detected on cloud storage!")
+                    
+                    # Write local handover_complete file to shut down keep-alive cell
+                    with open("/tmp/handover_complete", "w") as f:
+                        f.write("handover complete via cloud signal")
+                    
+                    # Delete the signal file from cloud so it's clean for next node
+                    subprocess.run(
+                        ["bash", "scripts/rclone_sync.sh", "delete_signal"],
+                        capture_output=True, text=True, timeout=15
+                    )
+                    log.info("✅ Remote handover signal cleared. Exiting.")
+                    break
+            except Exception as e:
+                log.warning(f"Error checking cloud signal: {e}")
     else:
         log.warning("Failover trigger failed. Uptime loop will continue to prevent crash/shutdown.")
 

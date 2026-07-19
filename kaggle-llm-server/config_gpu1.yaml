@@ -47,11 +47,11 @@ server:
   cache_type_v: q8_0
   log_file: ./logs/llama-server_8081.log
 tunnel:
-  provider: ngrok
+  provider: cloudflare
   ngrok_token_env: NGROK_AUTHTOKEN_2
-  ngrok_domain: 'sabbath-lucid-molar.ngrok-free.dev'         # Бесплатный статический домен Ngrok (например, name.ngrok-free.app)
-  cloudflare_token: ''     # Токен вашего постоянного Cloudflare Tunnel
-  cloudflare_domain: ''    # Ваш домен (например, kaggle.my-domain.com), привязанный к токену
+  ngrok_domain: 'sabbath-lucid-molar.ngrok-free.dev'
+  cloudflare_token: ''
+  cloudflare_domain: 'media.youngfreak.click'
 mcp:
   enabled: true
   config_file: ./mcp/mcp_servers.json

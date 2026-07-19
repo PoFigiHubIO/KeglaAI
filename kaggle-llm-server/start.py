@@ -78,38 +78,48 @@ def register_with_cloudflare_worker(public_url: str, port: int, cfg: dict):
 def trigger_handover(cfg: dict):
     cf_url = cfg["tunnel"].get("cloudflare_worker_url") or os.environ.get("CF_WORKER_URL", "")
     secret = os.environ.get("HANDOVER_SECRET", "default_secret")
-    if not cf_url:
-        return
+    
+    # 1. Если настроен Cloudflare Worker, отправляем сигнал через него
+    if cf_url:
+        import requests
+        try:
+            print("[start.py] Запрос активных URL для передачи управления...")
+            res = requests.get(f"{cf_url}/active", timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                old_media_url = data.get("media")
+                if old_media_url:
+                    print(f"[start.py] Отправка сигнала передачи управления старой ноде: {old_media_url}/v1/handover/complete ...")
+                    h_res = requests.post(
+                        f"{old_media_url}/v1/handover/complete",
+                        json={"secret": secret},
+                        timeout=15
+                    )
+                    if h_res.status_code == 200:
+                        print("[start.py] ✅ Сигнал передачи управления успешно отправлен старой ноде.")
+                        return
+                    else:
+                        print(f"[start.py][warn] Старая нода отклонила запрос: {h_res.status_code}")
+            else:
+                print(f"[start.py][warn] Не удалось получить активные URL: {res.status_code}")
+        except Exception as e:
+            print(f"[start.py][warn] Не удалось связаться со старой нодой через Worker: {e}")
 
-    import requests
+    # 2. Резервный канал: сигнализация через файл на облачном диске
+    print("[start.py] Отправка сигнала передачи управления через облачный диск (Rclone)...")
     try:
-        # Step 1: Получаем текущие URL старых инстансов из KV
-        print("[start.py] Запрос активных URL для передачи управления...")
-        res = requests.get(f"{cf_url}/active", timeout=10)
-        if res.status_code != 200:
-            print(f"[start.py][warn] Не удалось получить активные URL: {res.status_code}")
-            return
-
-        data = res.json()
-        old_media_url = data.get("media")
-
-        if not old_media_url:
-            print("[start.py] Старый медиа-сервер не найден в KV. Передача управления не требуется.")
-            return
-
-        # Step 2: Шлём запрос завершения на старый медиа-сервер
-        print(f"[start.py] Отправка сигнала передачи управления старой ноде: {old_media_url}/v1/handover/complete ...")
-        h_res = requests.post(
-            f"{old_media_url}/v1/handover/complete",
-            json={"secret": secret},
-            timeout=15
+        import subprocess
+        # Запускаем скрипт Rclone для выгрузки файла-сигнала
+        res = subprocess.run(
+            ["bash", "scripts/rclone_sync.sh", "upload_signal"],
+            capture_output=True, text=True, timeout=60
         )
-        if h_res.status_code == 200:
-            print("[start.py] ✅ Сигнал передачи управления успешно отправлен старой ноде.")
+        if res.returncode == 0:
+            print("[start.py] ✅ Сигнал передачи управления успешно записан в облако.")
         else:
-            print(f"[start.py][warn] Старая нода отклонила запрос или вернула ошибку: {h_res.status_code}")
+            print(f"[start.py][error] Не удалось записать сигнал в облако (code={res.returncode}): {res.stderr}")
     except Exception as e:
-        print(f"[start.py][warn] Не удалось связаться со старой нодой для передачи управления: {e}")
+        print(f"[start.py][error] Ошибка при отправке облачного сигнала: {e}")
 
 
 def main():
