@@ -27,19 +27,25 @@ REMOTE_NAME="backup"
 if [[ "$CLOUD_PROVIDER" == "yadisk" || "$CLOUD_PROVIDER" == "yandex" ]]; then
     YANDEX_USER="${YANDEX_USER:-${RCLONE_USER:-}}"
     YANDEX_PASSWORD="${YANDEX_PASSWORD:-${RCLONE_PASS:-}}"
+    YANDEX_TOKEN="${YANDEX_TOKEN:-${RCLONE_TOKEN:-}}"
     
-    if [[ -z "$YANDEX_USER" || -z "$YANDEX_PASSWORD" ]]; then
-        warn "YANDEX_USER (or RCLONE_USER) / YANDEX_PASSWORD (or RCLONE_PASS) is not set. Skipping sync."
+    if [[ -n "$YANDEX_TOKEN" ]]; then
+        # Yandex Disk native API config (Free Tier WebDAV bypass!)
+        export RCLONE_CONFIG_BACKUP_TYPE=yandex
+        export RCLONE_CONFIG_BACKUP_TOKEN="$YANDEX_TOKEN"
+        REMOTE_PATH="backup:/sync"
+    elif [[ -n "$YANDEX_USER" && -n "$YANDEX_PASSWORD" ]]; then
+        # Yandex Disk WebDAV config (Requires paid Yandex 360)
+        export RCLONE_CONFIG_BACKUP_TYPE=webdav
+        export RCLONE_CONFIG_BACKUP_URL=https://webdav.yandex.ru
+        export RCLONE_CONFIG_BACKUP_VENDOR=yandex
+        export RCLONE_CONFIG_BACKUP_USER="$YANDEX_USER"
+        export RCLONE_CONFIG_BACKUP_PASS=$(rclone obscure "$YANDEX_PASSWORD")
+        REMOTE_PATH="backup:/sync"
+    else
+        warn "Yandex credentials (either YANDEX_TOKEN or YANDEX_USER/YANDEX_PASSWORD) are not set. Skipping sync."
         exit 0
     fi
-    
-    # Yandex Disk WebDAV config
-    export RCLONE_CONFIG_BACKUP_TYPE=webdav
-    export RCLONE_CONFIG_BACKUP_URL=https://webdav.yandex.ru
-    export RCLONE_CONFIG_BACKUP_VENDOR=yandex
-    export RCLONE_CONFIG_BACKUP_USER="$YANDEX_USER"
-    export RCLONE_CONFIG_BACKUP_PASS=$(rclone obscure "$YANDEX_PASSWORD")
-    REMOTE_PATH="backup:/sync"
     
 elif [[ "$CLOUD_PROVIDER" == "gdrive" ]]; then
     GDRIVE_TOKEN="${GDRIVE_TOKEN:-}"
