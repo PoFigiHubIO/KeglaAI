@@ -67,9 +67,9 @@ PORT = int(os.environ.get("MEDIA_PORT", "8081"))
 OUTPUT_DIR = Path(os.environ.get("MEDIA_OUTPUT_DIR", "./output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# FLUX.1 Dev/Schnell model configuration
+# FLUX.1 Dev/Schnell or Z-Image-Turbo configuration
 FLUX_MODEL_ID = os.environ.get(
-    "FLUX_MODEL_ID", "black-forest-labs/FLUX.1-schnell"
+    "FLUX_MODEL_ID", "Tongyi-MAI/Z-Image-Turbo"
 )
 FLUX_LORA_ID = os.environ.get(
     "FLUX_LORA_ID", ""
@@ -263,8 +263,7 @@ class VRAMManager:
         log.info(f"Загрузка image pipeline: {FLUX_MODEL_ID}")
         log.info(f"  Квантование: NF4 (bitsandbytes)")
 
-        import torch
-        from diffusers import FluxPipeline
+        from diffusers import AutoPipelineForText2Image
         from transformers import BitsAndBytesConfig
 
         nf4_config = BitsAndBytesConfig(
@@ -274,15 +273,17 @@ class VRAMManager:
         )
 
         def _load_sync():
-            pipe = FluxPipeline.from_pretrained(
+            # Use AutoPipeline to automatically select the right class for SDXL/Flux/Z-Image-Turbo
+            pipe = AutoPipelineForText2Image.from_pretrained(
                 FLUX_MODEL_ID,
-                transformer_kwargs={"quantization_config": nf4_config},
-                torch_dtype=torch.float16,
+                transformer_kwargs={"quantization_config": nf4_config} if "flux" in FLUX_MODEL_ID.lower() else {},
+                torch_dtype=torch.float16 if "flux" in FLUX_MODEL_ID.lower() else torch.bfloat16,
             )
 
             pipe.enable_model_cpu_offload()
-            pipe.vae.enable_tiling()
-            pipe.vae.enable_slicing()
+            if hasattr(pipe, "vae") and pipe.vae:
+                pipe.vae.enable_tiling()
+                pipe.vae.enable_slicing()
 
             # --- Load active style LoRAs or fallback to default NSFW unlock ---
             try:
@@ -626,14 +627,27 @@ async def api_generate_image(request: Request):
 
         # Run inference in a thread to avoid blocking the event loop
         def _generate():
-            result = pipe(
-                prompt=prompt,
-                width=width,
-                height=height,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                generator=generator,
-            )
+            # Z-Image-Turbo SDXL-based pipeline has a max_sequence_length parameter or doesn't support guidance_scale = 0.
+            kwargs = {
+                "prompt": prompt,
+                "width": width,
+                "height": height,
+                "num_inference_steps": steps,
+                "generator": generator,
+            }
+            if "flux" in FLUX_MODEL_ID.lower():
+                kwargs["guidance_scale"] = guidance
+            else:
+                # For SDXL based Z-Image-Turbo, guidance_scale is 0.0 or 1.0 depending on the distilled model requirement
+                kwargs["guidance_scale"] = 0.0
+                kwargs["max_sequence_length"] = 1024
+
+            # Clean unsupported kwargs dynamically
+            import inspect
+            sig = inspect.signature(pipe.__call__)
+            valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+            result = pipe(**valid_kwargs)
             return result.images[0]
 
         loop = asyncio.get_event_loop()

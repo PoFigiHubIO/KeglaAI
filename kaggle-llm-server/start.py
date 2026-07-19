@@ -199,24 +199,32 @@ def main():
         try:
             from huggingface_hub import snapshot_download
             
-            # Скачиваем FLUX.1-schnell
-            print("\n[start.py] [1/3] Загрузка модели FLUX.1-schnell (для фото)...")
+            # Скачиваем Z-Image-Turbo (вместо заблокированного FLUX)
+            print("\n[start.py] [1/3] Загрузка модели Tongyi-MAI/Z-Image-Turbo (для фото)...")
             snapshot_download(
-                repo_id="black-forest-labs/FLUX.1-schnell",
+                repo_id="Tongyi-MAI/Z-Image-Turbo",
                 resume_download=True
             )
             
             # Скачиваем Wan2.1 Image-to-Video
-            print("\n[start.py] [2/3] Загрузка модели Wan2.1-I2V-14B-480P (для видео)...")
+            print("\n[start.py] [2/3] Загрузка модели Wan-Video/Wan2.1-I2V-14B-480P (для видео)...")
             snapshot_download(
                 repo_id="Wan-Video/Wan2.1-I2V-14B-480P",
                 resume_download=True
             )
 
             # Скачиваем Wan2.1 Text-to-Video
-            print("\n[start.py] [3/3] Загрузка модели Wan2.1-T2V-1.3B (для видео из текста)...")
+            print("\n[start.py] [3/3] Загрузка модели Wan-Video/Wan2.1-T2V-1.3B (для видео из текста)...")
             snapshot_download(
                 repo_id="Wan-Video/Wan2.1-T2V-1.3B",
+                resume_download=True
+            )
+            
+            # Скачиваем LoRA веса для Wan (Kijai/WanVideo_comfy)
+            print("\n[start.py] [доп] Загрузка LoRA-адаптеров Kijai/WanVideo_comfy для видео...")
+            snapshot_download(
+                repo_id="Kijai/WanVideo_comfy",
+                allow_patterns="Lightx2v/*",
                 resume_download=True
             )
             print("\n[start.py] ✅ Все модели медиа-сервера успешно загружены в кэш!")
@@ -335,11 +343,11 @@ def main():
         step("ЭТАП 8.9/9 — Сигнал передачи управления (Handover)")
         trigger_handover(cfg)
 
-        # Тестовый прогрев и запуск генератора картинок (FLUX)
+        # Тестовый прогрев и запуск генератора картинок (Z-Image-Turbo)
         print("\n" + "-" * 70)
-        print("[start.py] Тест генератора изображений (FLUX) для прогрева VRAM и кэша...")
-        print("[start.py] (При первом запуске это скачает веса FLUX ~20 GB с HuggingFace)")
-        print("[start.py] Логи скачивания и инициализации модели:")
+        print("[start.py] Тест генератора изображений (Z-Image-Turbo) для прогрева VRAM и кэша...")
+        print("[start.py] (При первом запуске это инициализирует модель)")
+        print("[start.py] Логи инициализации:")
         print("-" * 70)
 
         import threading
