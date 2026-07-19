@@ -404,7 +404,7 @@ class VRAMManager:
                     torch.cuda.memory_reserved() / 1024**3, 2
                 )
                 info["vram_total_gb"] = round(
-                    torch.cuda.get_device_properties(0).total_mem / 1024**3, 2
+                    torch.cuda.get_device_properties(0).total_memory / 1024**3, 2
                 )
                 info["gpu_name"] = torch.cuda.get_device_name(0)
         except (ImportError, RuntimeError):
@@ -432,7 +432,7 @@ async def lifespan(app: FastAPI):
         import torch
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
             log.info(f"GPU обнаружен: {gpu_name} ({gpu_mem:.1f} GB)")
         else:
             log.warning("CUDA недоступен — сервер запустится в CPU-режиме (медленно)")
