@@ -191,6 +191,39 @@ def main():
         os.system("pkill -f telegram_bot.py")
         os.system("pkill -f failover_timer.py")
 
+        # Предварительная загрузка весов моделей в переднем плане для отображения прогресс-баров в Kaggle
+        print("\n" + "-" * 70)
+        print("[start.py] Предварительная загрузка весов моделей (FLUX и Wan)...")
+        print("[start.py] Это запустит скачивание с отображением интерактивного прогресс-бара.")
+        print("-" * 70)
+        try:
+            from huggingface_hub import snapshot_download
+            
+            # Скачиваем FLUX.1-schnell
+            print("\n[start.py] [1/3] Загрузка модели FLUX.1-schnell (для фото)...")
+            snapshot_download(
+                repo_id="black-forest-labs/FLUX.1-schnell",
+                resume_download=True
+            )
+            
+            # Скачиваем Wan2.1 Image-to-Video
+            print("\n[start.py] [2/3] Загрузка модели Wan2.1-I2V-14B-480P (для видео)...")
+            snapshot_download(
+                repo_id="Wan-Video/Wan2.1-I2V-14B-480P",
+                resume_download=True
+            )
+
+            # Скачиваем Wan2.1 Text-to-Video
+            print("\n[start.py] [3/3] Загрузка модели Wan2.1-T2V-1.3B (для видео из текста)...")
+            snapshot_download(
+                repo_id="Wan-Video/Wan2.1-T2V-1.3B",
+                resume_download=True
+            )
+            print("\n[start.py] ✅ Все модели медиа-сервера успешно загружены в кэш!")
+        except Exception as e:
+            print(f"\n[start.py][warn] Ошибка при предзагрузке моделей: {e}")
+            print("[start.py] Попробуем продолжить запуск, медиа-сервер скачает модели сам.")
+
         log_f = open("logs/media_server_8081.log", "w")
         media_proc = subprocess.Popen(
             [sys.executable, "scripts/media_server.py"],
