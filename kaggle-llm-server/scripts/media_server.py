@@ -1426,7 +1426,7 @@ if __name__ == "__main__":
         log.info("CUDA_VISIBLE_DEVICES установлен в '1' (GPU 1)")
 
     uvicorn.run(
-        "media_server:app",
+        app,
         host=HOST,
         port=PORT,
         log_level="info",

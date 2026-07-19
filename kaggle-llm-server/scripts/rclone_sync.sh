@@ -23,7 +23,10 @@ fi
 CLOUD_PROVIDER="${RCLONE_PROVIDER:-yadisk}" # yadisk | gdrive
 REMOTE_NAME="backup"
 
-# Configure Rclone via environment dynamically
+# Configure Rclone via temporary config file dynamically
+RCLONE_CONF="/tmp/rclone.conf"
+rm -f "$RCLONE_CONF"
+
 if [[ "$CLOUD_PROVIDER" == "yadisk" || "$CLOUD_PROVIDER" == "yandex" ]]; then
     YANDEX_USER="${YANDEX_USER:-${RCLONE_USER:-}}"
     YANDEX_PASSWORD="${YANDEX_PASSWORD:-${RCLONE_PASS:-}}"
@@ -34,17 +37,25 @@ if [[ "$CLOUD_PROVIDER" == "yadisk" || "$CLOUD_PROVIDER" == "yandex" ]]; then
         if [[ "$YANDEX_TOKEN" != \{* ]]; then
             YANDEX_TOKEN="{\"access_token\":\"$YANDEX_TOKEN\",\"token_type\":\"Bearer\",\"expiry\":\"2036-01-01T00:00:00Z\"}"
         fi
-        # Yandex Disk native API config (Free Tier WebDAV bypass!)
-        export RCLONE_CONFIG_BACKUP_TYPE=yandex
-        export RCLONE_CONFIG_BACKUP_TOKEN="$YANDEX_TOKEN"
+        cat <<EOF > "$RCLONE_CONF"
+[backup]
+type = yandex
+token = $YANDEX_TOKEN
+EOF
+        export RCLONE_CONFIG="$RCLONE_CONF"
         REMOTE_PATH="backup:/sync"
     elif [[ -n "$YANDEX_USER" && -n "$YANDEX_PASSWORD" ]]; then
         # Yandex Disk WebDAV config (Requires paid Yandex 360)
-        export RCLONE_CONFIG_BACKUP_TYPE=webdav
-        export RCLONE_CONFIG_BACKUP_URL=https://webdav.yandex.ru
-        export RCLONE_CONFIG_BACKUP_VENDOR=yandex
-        export RCLONE_CONFIG_BACKUP_USER="$YANDEX_USER"
-        export RCLONE_CONFIG_BACKUP_PASS=$(rclone obscure "$YANDEX_PASSWORD")
+        RCLONE_CONFIG_BACKUP_PASS=$(rclone obscure "$YANDEX_PASSWORD")
+        cat <<EOF > "$RCLONE_CONF"
+[backup]
+type = webdav
+url = https://webdav.yandex.ru
+vendor = yandex
+user = $YANDEX_USER
+pass = $RCLONE_CONFIG_BACKUP_PASS
+EOF
+        export RCLONE_CONFIG="$RCLONE_CONF"
         REMOTE_PATH="backup:/sync"
     else
         warn "Yandex credentials (either YANDEX_TOKEN or YANDEX_USER/YANDEX_PASSWORD) are not set. Skipping sync."
@@ -59,11 +70,14 @@ elif [[ "$CLOUD_PROVIDER" == "gdrive" ]]; then
         exit 0
     fi
     
-    # Google Drive config
-    export RCLONE_CONFIG_BACKUP_TYPE=drive
-    export RCLONE_CONFIG_BACKUP_CLIENT_ID="${GDRIVE_CLIENT_ID:-}"
-    export RCLONE_CONFIG_BACKUP_CLIENT_SECRET="${GDRIVE_CLIENT_SECRET:-}"
-    export RCLONE_CONFIG_BACKUP_TOKEN="$GDRIVE_TOKEN"
+    cat <<EOF > "$RCLONE_CONF"
+[backup]
+type = drive
+client_id = ${GDRIVE_CLIENT_ID:-}
+client_secret = ${GDRIVE_CLIENT_SECRET:-}
+token = $GDRIVE_TOKEN
+EOF
+    export RCLONE_CONFIG="$RCLONE_CONF"
     REMOTE_PATH="backup:/kaggle_sync"
 else
     warn "Unknown RCLONE_PROVIDER '$CLOUD_PROVIDER'. Skipping sync."

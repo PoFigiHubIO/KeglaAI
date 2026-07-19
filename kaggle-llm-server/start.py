@@ -201,7 +201,92 @@ def main():
         with open("logs/media_server_8081.pid", "w") as f:
             f.write(str(media_proc.pid))
         print(f"[start.py] Media Server запущен (PID={media_proc.pid})")
-        time.sleep(2)
+        
+        # Ожидание готовности FastAPI Media Server
+        print("[start.py] Ожидание инициализации FastAPI Media Server...")
+        ready = False
+        for i in range(30):
+            if media_proc.poll() is not None:
+                print(f"[start.py][error] Процесс Media Server (PID={media_proc.pid}) аварийно завершился!")
+                break
+            try:
+                import urllib.request
+                import json
+                with urllib.request.urlopen("http://127.0.0.1:8081/health", timeout=2) as response:
+                    if response.status == 200:
+                        data = json.loads(response.read().decode())
+                        if data.get("status") == "ok":
+                            ready = True
+                            print("[start.py] ✅ FastAPI Media Server успешно запущен и слушает порт 8081!")
+                            break
+            except Exception:
+                pass
+            time.sleep(2)
+
+        if not ready:
+            print("[start.py][error] Media Server не ответил на /health. Логи запуска:")
+            if os.path.exists("logs/media_server_8081.log"):
+                with open("logs/media_server_8081.log", "r") as lf:
+                    for line in lf.readlines()[-40:]:
+                        print(line, end="")
+            sys.exit(1)
+
+        # Тестовый прогрев и запуск генератора картинок (FLUX)
+        print("\n" + "-" * 70)
+        print("[start.py] Тест генератора изображений (FLUX) для прогрева VRAM и кэша...")
+        print("[start.py] (При первом запуске это скачает веса FLUX ~20 GB с HuggingFace)")
+        print("[start.py] Логи скачивания и инициализации модели:")
+        print("-" * 70)
+
+        import threading
+        stop_tail = False
+        def tail_logs():
+            try:
+                with open("logs/media_server_8081.log", "r") as lf:
+                    lf.seek(0, 2)
+                    while not stop_tail:
+                        line = lf.readline()
+                        if line:
+                            print(f"[media] {line.strip()}")
+                        else:
+                            time.sleep(0.5)
+            except Exception:
+                pass
+
+        tail_thread = threading.Thread(target=tail_logs, daemon=True)
+        tail_thread.start()
+
+        import urllib.request
+        import json
+        req_data = json.dumps({
+            "prompt": "Test: red sphere on table",
+            "width": 256,
+            "height": 256,
+            "steps": 1,
+            "guidance_scale": 1.0,
+            "seed": 42
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:8081/api/generate_image",
+                data=req_data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            # 10 minutes timeout for model download
+            with urllib.request.urlopen(req, timeout=600) as response:
+                if response.status == 200:
+                    res_json = json.loads(response.read().decode())
+                    print("[start.py] ✅ Тестовая генерация на GPU 1 завершена успешно!")
+                    if "image_base64" in res_json:
+                        print(f"[start.py] Изображение сгенерировано (Base64 длина: {len(res_json['image_base64'])})")
+                else:
+                    print(f"[start.py][error] Тест генерации вернул статус: {response.status}")
+        except Exception as e:
+            print(f"[start.py][error] Ошибка при тестировании генерации: {e}")
+        finally:
+            stop_tail = True
 
         # Запускаем туннель для порта 8081
         step("ЭТАП 7/9 — Публикация через туннель")
@@ -245,6 +330,17 @@ def main():
         with open("logs/telegram_bot.pid", "w") as f:
             f.write(str(bot_proc.pid))
         print(f"[start.py] Telegram Bot запущен (PID={bot_proc.pid})")
+        
+        time.sleep(5)
+        if bot_proc.poll() is not None:
+            print("[start.py][error] Telegram Bot завершился с ошибкой!")
+            if os.path.exists("logs/telegram_bot.log"):
+                with open("logs/telegram_bot.log", "r") as lf:
+                    for line in lf.readlines()[-40:]:
+                        print(f"[bot] {line.strip()}")
+            sys.exit(1)
+        else:
+            print("[start.py] ✅ Telegram Bot успешно работает в фоне.")
 
         # Запуск таймера авто-переключения (failover)
         step("ЭТАП 8.5/9 — Запуск таймера авто-ротации (9h)")
