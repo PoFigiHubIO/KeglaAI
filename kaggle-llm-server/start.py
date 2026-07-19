@@ -176,8 +176,8 @@ def main():
     step("ЭТАП 2.5/9 — Восстановление базы данных из облака")
     run(["bash", "scripts/rclone_sync.sh", "download"], check=False)
 
-    # Isolate Hugging Face cache on Kaggle persistent directory
-    os.environ["HF_HOME"] = "/kaggle/working/.cache"
+    # Isolate Hugging Face cache on temporary directory (to avoid 20GB disk quota limit for FLUX/Wan)
+    os.environ["HF_HOME"] = "/tmp/.cache"
 
     public_url = ""
 
