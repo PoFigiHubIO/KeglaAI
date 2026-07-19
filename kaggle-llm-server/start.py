@@ -122,7 +122,38 @@ def trigger_handover(cfg: dict):
         print(f"[start.py][error] Ошибка при отправке облачного сигнала: {e}")
 
 
+def load_kaggle_secrets():
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        for key in [
+            "HF_TOKEN",
+            "TELEGRAM_BOT_TOKEN",
+            "CLOUDFLARE_TUNNEL_TOKEN",
+            "YANDEX_TOKEN",
+            "RCLONE_PROVIDER",
+            "RCLONE_USER",
+            "RCLONE_PASS",
+            "HANDOVER_SECRET",
+            "NEXT_KAGGLE_USERNAME",
+            "NEXT_KAGGLE_KEY",
+            "NEXT_KAGGLE_SLUG",
+            "ROTATION_TIME_SECONDS",
+            "NGROK_AUTHTOKEN",
+            "NGROK_AUTHTOKEN_2"
+        ]:
+            try:
+                val = user_secrets.get_secret(key)
+                if val:
+                    os.environ[key] = val
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def main():
+    load_kaggle_secrets()
     import yaml
 
     config_path = os.environ.get("CONFIG_FILE", "config.yaml")
