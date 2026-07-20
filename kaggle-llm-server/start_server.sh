@@ -204,7 +204,11 @@ else
     log "API-key защита: выключена (server.api_key пуст в config.yaml)"
 fi
 
-if [[ "$TENSOR_SPLIT" == "1" ]]; then
+GPU_DEVICE=$(read_yaml gpu)
+if [[ -n "$GPU_DEVICE" ]]; then
+    log "Используем выделенный GPU: $GPU_DEVICE"
+    export CUDA_VISIBLE_DEVICES="$GPU_DEVICE"
+elif [[ "$TENSOR_SPLIT" == "1" ]]; then
     log "Модель полностью помещается в VRAM одного GPU. Отключаем мульти-GPU для стабильности и скорости (CUDA_VISIBLE_DEVICES=0)."
     export CUDA_VISIBLE_DEVICES=0
 fi

@@ -204,20 +204,76 @@ def main():
     if needs_build:
         run(["bash", "build.sh"])
 
-    # --- Этап 4: загрузка GGUF-модели ---
-    step("ЭТАП 4/9 — Загрузка GGUF-модели")
-    run([sys.executable, "download_model.py"])
+    # Setup environments for both backends
+    env_12b = os.environ.copy()
+    env_12b["CONFIG_FILE"] = "config_12b.yaml"
+    env_e2b = os.environ.copy()
+    env_e2b["CONFIG_FILE"] = "config_e2b.yaml"
+
+    # --- Этап 4: загрузка GGUF-моделей ---
+    step("ЭТАП 4/9 — Загрузка GGUF-моделей (12B + E2B)")
+    print("[start.py] Загрузка Gemma-4-12B...")
+    subprocess.run([sys.executable, "download_model.py"], env=env_12b, check=True)
+    print("[start.py] Загрузка Gemma-4-E2B...")
+    subprocess.run([sys.executable, "download_model.py"], env=env_e2b, check=True)
 
     # --- Этап 5: автоподбор параметров ---
-    step("ЭТАП 5/9 — Автоподбор параметров запуска")
-    run([sys.executable, "scripts/optimize.py"])
+    step("ЭТАП 5/9 — Автоподбор параметров запуска (12B + E2B)")
+    subprocess.run([sys.executable, "scripts/optimize.py"], env=env_12b, check=True)
+    subprocess.run([sys.executable, "scripts/optimize.py"], env=env_e2b, check=True)
 
-    # --- Этап 6-8: запуск сервера (API + Web UI) ---
-    step("ЭТАП 6-8/9 — Запуск llama-server (OpenAI API + Web UI)")
-    run(["bash", "start_server.sh"])
+    # --- Этап 6: запуск серверов llama-server ---
+    step("ЭТАП 6/9 — Запуск двух инстансов llama-server (12B на GPU 0, E2B на GPU 1)")
+    # Останавливаем старые инстансы
+    os.system("pkill -f llama-server")
+    time.sleep(1)
+    
+    # Запуск 12B (порт 8083)
+    subprocess.run(["bash", "start_server.sh"], env=env_12b, check=True)
+    # Запуск E2B (порт 8084)
+    subprocess.run(["bash", "start_server.sh"], env=env_e2b, check=True)
 
-    # --- Этап 7: публичный туннель ---
-    step("ЭТАП 7/9 — Публикация через туннель")
+    # --- Этап 7: запуск API Gateway ---
+    step("ЭТАП 7/9 — Запуск API Gateway и Web UI (порт 8080)")
+    os.system("pkill -f gateway.py")
+    gateway_log = open("logs/gateway.log", "w")
+    gateway_proc = subprocess.Popen(
+        [sys.executable, "scripts/gateway.py"],
+        stdout=gateway_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True
+    )
+    with open("logs/gateway.pid", "w") as f:
+        f.write(str(gateway_proc.pid))
+    print(f"[start.py] API Gateway запущен (PID={gateway_proc.pid})")
+    
+    # Ожидание готовности API Gateway
+    ready = False
+    for _ in range(30):
+        if gateway_proc.poll() is not None:
+            print("[start.py][error] Процесс API Gateway аварийно завершился!")
+            break
+        try:
+            import urllib.request
+            with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=2) as response:
+                if response.status == 200:
+                    ready = True
+                    print("[start.py] ✅ API Gateway успешно запущен и слушает порт 8080!")
+                    break
+        except Exception:
+            pass
+        time.sleep(2)
+
+    if not ready:
+        print("[start.py][error] API Gateway не ответил на /v1/models. Логи:")
+        if os.path.exists("logs/gateway.log"):
+            with open("logs/gateway.log", "r") as lf:
+                for line in lf.readlines()[-40:]:
+                    print(line, end="")
+        sys.exit(1)
+
+    # --- Этап 8: публичный туннель ---
+    step("ЭТАП 8/9 — Публикация через туннель")
     from tunnel import start_tunnel
 
     provider = cfg["tunnel"]["provider"]
@@ -237,9 +293,10 @@ def main():
     ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
     ngrok_token = os.environ.get(ngrok_token_env, "")
 
+    # Проксируем порт 8080 (API Gateway) вместо порта 12B/E2B напрямую
     proc, public_url = start_tunnel(
         provider,
-        port,
+        8080,
         cloudflare_token=cloudflare_token,
         cloudflare_domain=cloudflare_domain,
         ngrok_domain=ngrok_domain,
@@ -249,14 +306,14 @@ def main():
         f.write(str(proc.pid))
 
     if not public_url:
-        public_url = f"http://127.0.0.1:{port}"
-    print(f"[start.py] Публичный URL LLM: {public_url}")
+        public_url = f"http://127.0.0.1:8080"
+    print(f"[start.py] Публичный URL API Gateway: {public_url}")
 
     # Регистрация в Cloudflare KV
     register_with_cloudflare_worker(public_url, port, cfg)
 
     # --- Запуск Telegram Bot ---
-    step("ЭТАП 8/9 — Запуск Telegram Bot Agent Loop")
+    step("ЭТАП 9/9 — Запуск Telegram Bot Agent Loop")
     # Clean up old bot instance
     os.system("pkill -f telegram_bot.py")
     bot_log = open("logs/telegram_bot.log", "w")

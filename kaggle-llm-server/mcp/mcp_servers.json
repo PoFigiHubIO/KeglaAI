@@ -25,6 +25,11 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
       "description": "Инструмент пошагового рассуждения для agent loop."
+    },
+    "shell": {
+      "command": "python",
+      "args": ["scripts/mcp_shell.py"],
+      "description": "Доступ к терминалу (bash/cmd) сервера — запуск скриптов, компиляция и администрирование."
     }
   },
 
