@@ -206,7 +206,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 json={
                     "model": model,
                     "messages": messages,
-                    "stream": true
+                    "stream": True
                 }
             ) as response:
                 if response.status_code != 200:

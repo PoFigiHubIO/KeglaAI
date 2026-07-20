@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 import httpx
 from typing import Dict, Any, List, Optional
@@ -926,3 +927,7 @@ async def serve_webui():
     </html>
     """
     return HTMLResponse(content=html_content)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
