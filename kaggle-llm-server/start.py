@@ -270,30 +270,45 @@ def main():
         except Exception:
             pass
 
-    cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-    cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
-    ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
-    ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
-    ngrok_token = os.environ.get(ngrok_token_env, "")
+    provider = cfg["tunnel"]["provider"]
+    if provider == "none" or not provider:
+        print("[start.py] Публичный туннель отключен (provider = none).")
+        public_url = "http://127.0.0.1:8080"
+    else:
+        tunnel_pid_file = f"logs/tunnel_{port}.pid"
+        if os.path.exists(tunnel_pid_file):
+            try:
+                with open(tunnel_pid_file, "r") as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 15)
+                time.sleep(1)
+            except Exception:
+                pass
 
-    # Проксируем порт 8080 (API Gateway) вместо порта 12B/E2B напрямую
-    proc, public_url = start_tunnel(
-        provider,
-        8080,
-        cloudflare_token=cloudflare_token,
-        cloudflare_domain=cloudflare_domain,
-        ngrok_domain=ngrok_domain,
-        ngrok_token=ngrok_token
-    )
-    with open(tunnel_pid_file, "w") as f:
-        f.write(str(proc.pid))
+        cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
+        ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
+        ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
+        ngrok_token = os.environ.get(ngrok_token_env, "")
 
-    if not public_url:
-        public_url = f"http://127.0.0.1:8080"
-    print(f"[start.py] Публичный URL API Gateway: {public_url}")
+        # Проксируем порт 8080 (API Gateway) вместо порта 12B/E2B напрямую
+        proc, public_url = start_tunnel(
+            provider,
+            8080,
+            cloudflare_token=cloudflare_token,
+            cloudflare_domain=cloudflare_domain,
+            ngrok_domain=ngrok_domain,
+            ngrok_token=ngrok_token
+        )
+        with open(tunnel_pid_file, "w") as f:
+            f.write(str(proc.pid))
 
-    # Регистрация в Cloudflare KV
-    register_with_cloudflare_worker(public_url, port, cfg)
+        if not public_url:
+            public_url = f"http://127.0.0.1:8080"
+        print(f"[start.py] Публичный URL API Gateway: {public_url}")
+
+        # Регистрация в Cloudflare KV
+        register_with_cloudflare_worker(public_url, port, cfg)
 
     # --- Запуск Telegram Bot ---
     step("ЭТАП 9/9 — Запуск Telegram Bot Agent Loop")
