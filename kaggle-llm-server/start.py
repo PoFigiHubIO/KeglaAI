@@ -204,34 +204,17 @@ def main():
     if needs_build:
         run(["bash", "build.sh"])
 
-    # Setup environments for both backends
-    env_12b = os.environ.copy()
-    env_12b["CONFIG_FILE"] = "config_12b.yaml"
-    env_e2b = os.environ.copy()
-    env_e2b["CONFIG_FILE"] = "config_e2b.yaml"
-
-    # --- Этап 4: загрузка GGUF-моделей ---
-    step("ЭТАП 4/9 — Загрузка GGUF-моделей (12B + E2B)")
-    print("[start.py] Загрузка Gemma-4-12B...")
-    subprocess.run([sys.executable, "download_model.py"], env=env_12b, check=True)
-    print("[start.py] Загрузка Gemma-4-E2B...")
-    subprocess.run([sys.executable, "download_model.py"], env=env_e2b, check=True)
+    # --- Этап 4: загрузка GGUF-модели ---
+    step(f"ЭТАП 4/9 — Загрузка GGUF-модели ({config_path})")
+    run([sys.executable, "download_model.py"])
 
     # --- Этап 5: автоподбор параметров ---
-    step("ЭТАП 5/9 — Автоподбор параметров запуска (12B + E2B)")
-    subprocess.run([sys.executable, "scripts/optimize.py"], env=env_12b, check=True)
-    subprocess.run([sys.executable, "scripts/optimize.py"], env=env_e2b, check=True)
+    step("ЭТАП 5/9 — Автоподбор параметров запуска")
+    run([sys.executable, "scripts/optimize.py"])
 
-    # --- Этап 6: запуск серверов llama-server ---
-    step("ЭТАП 6/9 — Запуск двух инстансов llama-server (12B на GPU 0, E2B на GPU 1)")
-    # Останавливаем старые инстансы
-    os.system("pkill -f llama-server")
-    time.sleep(1)
-    
-    # Запуск 12B (порт 8083)
-    subprocess.run(["bash", "start_server.sh"], env=env_12b, check=True)
-    # Запуск E2B (порт 8084)
-    subprocess.run(["bash", "start_server.sh"], env=env_e2b, check=True)
+    # --- Этап 6: запуск сервера llama-server ---
+    step("ЭТАП 6/9 — Запуск llama-server")
+    run(["bash", "start_server.sh"])
 
     # --- Этап 7: запуск API Gateway ---
     step("ЭТАП 7/9 — Запуск API Gateway и Web UI (порт 8080)")
