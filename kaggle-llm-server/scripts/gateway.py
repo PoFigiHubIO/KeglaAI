@@ -177,9 +177,122 @@ def get_backend_url(model: str) -> str:
         return f"http://127.0.0.1:{PORT_E2B}/v1/chat/completions"
     return f"http://127.0.0.1:{PORT_12B}/v1/chat/completions"
 
+async def manage_mcp_server_tool(arguments: Dict[str, Any]) -> str:
+    action = arguments.get("action")
+    name = arguments.get("name")
+    command = arguments.get("command")
+    args = arguments.get("args", [])
+    description = arguments.get("description", "")
+    
+    mcp_config_path = "mcp/mcp_servers.json"
+    
+    if action == "reload":
+        for client in list(mcp_clients.values()):
+            await client.stop()
+        mcp_clients.clear()
+        await load_mcp_servers()
+        return "Успешно перезапущены все MCP-серверы из конфига."
+        
+    if action == "list":
+        status_list = []
+        for c_name, client in mcp_clients.items():
+            status_list.append({
+                "name": c_name,
+                "status": "running" if client.proc and client.proc.returncode is None else "stopped",
+                "tools": [t["name"] for t in client.tools]
+            })
+        return json.dumps(status_list, ensure_ascii=False, indent=2)
+
+    if not name:
+        return "Ошибка: Не указано имя MCP-сервера (параметр 'name')."
+        
+    config = {"mcpServers": {}}
+    if os.path.exists(mcp_config_path):
+        try:
+            with open(mcp_config_path, "r", encoding="utf-8") as f:
+                lines = [l for l in f.readlines() if not l.strip().startswith("//")]
+                config = json.loads("".join(lines))
+        except Exception as e:
+            log.error(f"Error parsing mcp_servers.json: {e}")
+            
+    if "mcpServers" not in config:
+        config["mcpServers"] = {}
+        
+    if action == "add":
+        if not command:
+            return "Ошибка: Не указана команда запуска (параметр 'command') для добавления сервера."
+        
+        config["mcpServers"][name] = {
+            "command": command,
+            "args": args,
+            "description": description
+        }
+        
+        try:
+            with open(mcp_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"Ошибка записи конфигурации на диск: {e}"
+            
+        if name in mcp_clients:
+            await mcp_clients[name].stop()
+            mcp_clients.pop(name)
+            
+        client = StdioMcpClient(name, command, args)
+        await client.start()
+        mcp_clients[name] = client
+        
+        tools_added = [t["name"] for t in client.tools]
+        return f"Успешно добавлен и запущен MCP-сервер '{name}'. Подключенные инструменты: {tools_added}"
+        
+    elif action == "remove":
+        if name not in config["mcpServers"]:
+            return f"Сервер '{name}' не найден в конфигурации."
+            
+        config["mcpServers"].pop(name)
+        
+        try:
+            with open(mcp_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"Ошибка записи конфигурации на диск: {e}"
+            
+        if name in mcp_clients:
+            await mcp_clients[name].stop()
+            mcp_clients.pop(name)
+            
+        return f"Успешно удален и остановлен MCP-сервер '{name}'."
+        
+    return f"Неизвестное действие: {action}"
+
 # Expose local tools for llama-server function calling
 def get_mcp_tools_list() -> List[Dict[str, Any]]:
     tools = []
+    
+    # Add gateway native tools
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "gateway__manage_mcp_server",
+            "description": "Управление MCP-серверами: добавление (add), удаление (remove), список (list) или перезапуск (reload). Позволяет динамически подключать новые API и инструменты.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "remove", "list", "reload"], "description": "Действие для выполнения"},
+                    "name": {"type": "string", "description": "Имя MCP-сервера (для add/remove)"},
+                    "command": {"type": "string", "description": "Команда запуска (например, 'npx' или 'python')"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Аргументы запуска"
+                    },
+                    "description": {"type": "string", "description": "Описание сервера"}
+                },
+                "required": ["action"]
+            }
+        }
+    })
+    
     for client in mcp_clients.values():
         for t in client.tools:
             # Format tool description according to OpenAI spec
@@ -194,6 +307,9 @@ def get_mcp_tools_list() -> List[Dict[str, Any]]:
     return tools
 
 async def execute_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
+    if tool_name == "gateway__manage_mcp_server":
+        return await manage_mcp_server_tool(arguments)
+        
     if "__" not in tool_name:
         return f"Error: Invalid tool name format {tool_name}"
         
