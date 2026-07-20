@@ -336,7 +336,12 @@ async def execute_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
 # OpenAI Chat completions with embedded Agent Loop
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as e:
+        log.error(f"Error parsing request JSON: {e}")
+        return JSONResponse(status_code=400, content={"error": {"message": f"Invalid JSON body: {e}", "type": "invalid_request_error"}})
+
     model = body.get("model", "gemma-4-12b")
     messages = body.get("messages", [])
     
@@ -348,8 +353,6 @@ async def chat_completions(request: Request):
     current_messages = list(messages)
     
     # Inject tools to the request body if model supports it
-    # IMPORTANT: Always use stream=False for backend requests within the agent loop.
-    # The gateway generates its own streaming response for clients.
     body_with_tools = dict(body)
     body_with_tools["stream"] = False  # Never stream from backend in agent loop
     if tools:
@@ -357,35 +360,75 @@ async def chat_completions(request: Request):
         body_with_tools["tool_choice"] = "auto"
 
     async def event_generator():
-        # Yield streaming response or run full agent loop
-        # For simplicity, we execute the agent loop non-streaming, but yield tokens
-        # If stream is True, we yield JSON-chunks, otherwise we return normal response
         nonlocal current_messages
-        
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            for iteration in range(max_iterations):
-                log.info(f"Agent Loop iteration {iteration + 1}/{max_iterations}")
-                
-                # Update messages in payload
-                body_with_tools["messages"] = current_messages
-                
-                # Call backend LLM
-                response = await client.post(backend_url, json=body_with_tools)
-                if response.status_code != 200:
-                    yield f"data: {json.dumps({'error': response.text})}\n\n"
-                    return
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                for iteration in range(max_iterations):
+                    log.info(f"Agent Loop iteration {iteration + 1}/{max_iterations}")
                     
-                res_data = response.json()
-                choice = res_data["choices"][0]
-                message = choice.get("message", {})
-                
-                tool_calls = message.get("tool_calls", [])
-                content = message.get("content", "")
-                
-                if not tool_calls:
-                    # Final response reached, yield text
+                    # Update messages in payload
+                    body_with_tools["messages"] = current_messages
+                    
+                    # Call backend LLM
+                    try:
+                        response = await client.post(backend_url, json=body_with_tools)
+                    except httpx.ConnectError as ce:
+                        err_msg = f"Connection error to backend model '{model}' at {backend_url}. Is the model running?"
+                        log.error(err_msg)
+                        if body.get("stream"):
+                            yield f"data: {json.dumps({'id': f'chatcmpl-{uuid.uuid4()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'error': {'message': err_msg, 'type': 'api_error'}})}\n\n"
+                        else:
+                            yield json.dumps({"error": {"message": err_msg, "type": "api_error"}})
+                        return
+                    except Exception as e:
+                        err_msg = f"Error calling backend model: {e}"
+                        log.error(err_msg)
+                        if body.get("stream"):
+                            yield f"data: {json.dumps({'id': f'chatcmpl-{uuid.uuid4()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'error': {'message': err_msg, 'type': 'api_error'}})}\n\n"
+                        else:
+                            yield json.dumps({"error": {"message": err_msg, "type": "api_error"}})
+                        return
+                        
+                    if response.status_code != 200:
+                        err_msg = f"Backend returned status {response.status_code}: {response.text}"
+                        log.error(err_msg)
+                        if body.get("stream"):
+                            yield f"data: {json.dumps({'id': f'chatcmpl-{uuid.uuid4()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'error': {'message': err_msg, 'type': 'api_error'}})}\n\n"
+                        else:
+                            yield json.dumps({"error": {"message": err_msg, "type": "api_error"}})
+                        return
+                        
+                    res_data = response.json()
+                    choice = res_data["choices"][0]
+                    message = choice.get("message", {})
+                    
+                    tool_calls = message.get("tool_calls", [])
+                    content = message.get("content", "")
+                    
+                    if not tool_calls:
+                        # Final response reached, yield text
+                        if body.get("stream"):
+                            # Format as stream chunk
+                            chunk = {
+                                "id": f"chatcmpl-{uuid.uuid4()}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": content},
+                                    "finish_reason": "stop"
+                                }]
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+                            yield "data: [DONE]\n\n"
+                        else:
+                            yield json.dumps(res_data)
+                        return
+                    
+                    # Yield a status update to the client that tools are being run
                     if body.get("stream"):
-                        # Format as stream chunk
+                        status_text = f"\n*[Запуск инструментов... Попытка {iteration + 1}]*\n"
                         chunk = {
                             "id": f"chatcmpl-{uuid.uuid4()}",
                             "object": "chat.completion.chunk",
@@ -393,85 +436,86 @@ async def chat_completions(request: Request):
                             "model": model,
                             "choices": [{
                                 "index": 0,
-                                "delta": {"content": content},
-                                "finish_reason": "stop"
-                            }]
-                        }
-                        yield f"data: {json.dumps(chunk)}\n\n"
-                        yield "data: [DONE]\n\n"
-                    else:
-                        yield json.dumps(res_data)
-                    return
-                
-                # Yield a status update to the client that tools are being run
-                if body.get("stream"):
-                    status_text = f"\n*[Запуск инструментов... Попытка {iteration + 1}]*\n"
-                    chunk = {
-                        "choices": [{
-                            "index": 0,
-                            "delta": {"content": status_text},
-                            "finish_reason": None
-                        }]
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                
-                # Append assistant message with tool calls to history
-                current_messages.append(message)
-                
-                # Execute all tool calls in parallel
-                tool_tasks = []
-                for tc in tool_calls:
-                    func = tc.get("function", {})
-                    t_name = func.get("name")
-                    try:
-                        t_args = json.loads(func.get("arguments", "{}"))
-                    except Exception:
-                        t_args = {}
-                    tool_tasks.append((tc.get("id"), t_name, t_args))
-                    
-                # Run tool execution
-                for tc_id, t_name, t_args in tool_tasks:
-                    tool_result = await execute_tool_call(t_name, t_args)
-                    current_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "name": t_name,
-                        "content": tool_result
-                    })
-                    
-                    if body.get("stream"):
-                        # Log tool result into stream
-                        clean_result = tool_result[:400] + "..." if len(tool_result) > 400 else tool_result
-                        tool_log = f"\n* инструмент `{t_name}` вернул:\n```\n{clean_result}\n```\n"
-                        chunk = {
-                            "choices": [{
-                                "index": 0,
-                                "delta": {"content": tool_log},
+                                "delta": {"content": status_text},
                                 "finish_reason": None
                             }]
                         }
                         yield f"data: {json.dumps(chunk)}\n\n"
-            
-            # Loop ended without final text
-            err_msg = "Error: Agent loop reached maximum iterations."
+                    
+                    # Append assistant message with tool calls to history
+                    current_messages.append(message)
+                    
+                    # Execute all tool calls in parallel
+                    tool_tasks = []
+                    for tc in tool_calls:
+                        func = tc.get("function", {})
+                        t_name = func.get("name")
+                        try:
+                            t_args = json.loads(func.get("arguments", "{}"))
+                        except Exception:
+                            t_args = {}
+                        tool_tasks.append((tc.get("id"), t_name, t_args))
+                        
+                    # Run tool execution
+                    for tc_id, t_name, t_args in tool_tasks:
+                        tool_result = await execute_tool_call(t_name, t_args)
+                        current_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "name": t_name,
+                            "content": tool_result
+                        })
+                        
+                        if body.get("stream"):
+                            # Log tool result into stream
+                            clean_result = tool_result[:400] + "..." if len(tool_result) > 400 else tool_result
+                            tool_log = f"\n* инструмент `{t_name}` вернул:\n```\n{clean_result}\n```\n"
+                            chunk = {
+                                "id": f"chatcmpl-{uuid.uuid4()}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": tool_log},
+                                    "finish_reason": None
+                                }]
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+                
+                # Loop ended without final text
+                err_msg = "Error: Agent loop reached maximum iterations."
+                if body.get("stream"):
+                    yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {'content': err_msg}, 'finish_reason': 'length'}]})}\n\n"
+                else:
+                    yield json.dumps({
+                        "choices": [{
+                            "message": {"role": "assistant", "content": err_msg},
+                            "finish_reason": "length"
+                        }]
+                    })
+        except Exception as ex:
+            log.error(f"Unhandled exception in event_generator: {ex}", exc_info=True)
             if body.get("stream"):
-                yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {'content': err_msg}, 'finish_reason': 'length'}]})}\n\n"
+                yield f"data: {json.dumps({'id': f'chatcmpl-{uuid.uuid4()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'error': {'message': str(ex), 'type': 'internal_error'}})}\n\n"
             else:
-                yield json.dumps({
-                    "choices": [{
-                        "message": {"role": "assistant", "content": err_msg},
-                        "finish_reason": "length"
-                    }]
-                })
+                yield json.dumps({"error": {"message": str(ex), "type": "internal_error"}})
 
     # Wrap the generator
     if body.get("stream"):
-        import time
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     else:
         # Non-streaming call, wait for the first item from generator
-        async for item in event_generator():
-            return JSONResponse(content=json.loads(item))
+        try:
+            async for item in event_generator():
+                parsed_item = json.loads(item)
+                if "error" in parsed_item:
+                    return JSONResponse(status_code=500, content=parsed_item)
+                return JSONResponse(content=parsed_item)
+            return JSONResponse(status_code=500, content={"error": {"message": "No response generated", "type": "api_error"}})
+        except Exception as e:
+            log.error(f"Error in non-streaming response generation: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "internal_error"}})
 
 # ---------------------------------------------------------------------------
 # HTML Web UI serving
