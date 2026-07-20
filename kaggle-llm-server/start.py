@@ -162,6 +162,11 @@ def main():
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    gpu = cfg.get("server", {}).get("gpu")
+    if gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        print(f"[start.py] Изолируем процесс на GPU: {gpu}")
+
     port = cfg["server"].get("port", 8080)
 
     # --- Этап 1: анализ окружения ---
