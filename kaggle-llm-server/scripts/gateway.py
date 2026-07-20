@@ -155,7 +155,7 @@ async def load_mcp_servers():
 
 @app.on_event("startup")
 async def startup_event():
-    await load_mcp_servers()
+    asyncio.create_task(load_mcp_servers())
 
 @app.on_event("shutdown")
 async def shutdown_event():
