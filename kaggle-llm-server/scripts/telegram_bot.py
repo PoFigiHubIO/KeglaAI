@@ -214,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await status_msg.edit_text(f"Ошибка API шлюза: {err_body.decode('utf-8')[:200]}")
                     return
                     
-                async for line in response.iter_lines():
+                async for line in response.aiter_lines():
                     if line.startswith("data: "):
                         data_str = line[6:].strip()
                         if data_str == "[DONE]":
