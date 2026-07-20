@@ -58,7 +58,7 @@ def _ensure_ngrok() -> str:
     binary = "./bin/ngrok"
     if not os.path.exists(binary):
         os.makedirs("./bin", exist_ok=True)
-        url = "https://bin.equinox.io/c/bNyj1mQ2G8W/ngrok-v3-stable-linux-amd64.tgz"
+        url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
         tar_path = "./bin/ngrok.tgz"
         print(f"[tunnel] Downloading ngrok from {url}...")
         _download_file(url, tar_path)
