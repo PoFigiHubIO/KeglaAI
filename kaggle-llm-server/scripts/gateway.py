@@ -31,8 +31,8 @@ app.add_middleware(
 
 # Configuration & Backend servers
 CONFIG_PATH = os.environ.get("CONFIG_FILE", "config.yaml")
-PORT_12B = 8083
-PORT_E2B = 8084
+PORT_12B = 8084
+PORT_E2B = 8083
 
 # MCP Client Session class
 class StdioMcpClient:

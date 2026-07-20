@@ -141,7 +141,8 @@ def load_kaggle_secrets():
             "ROTATION_TIME_SECONDS",
             "NGROK_AUTHTOKEN",
             "NGROK_AUTHTOKEN_2",
-            "CLOUDFLARE_TUNNEL_DOMAIN"
+            "CLOUDFLARE_TUNNEL_DOMAIN_8083",
+            "CLOUDFLARE_TUNNEL_DOMAIN_8084"
         ]:
             try:
                 val = user_secrets.get_secret(key)
@@ -266,7 +267,7 @@ def main():
     from tunnel import start_tunnel
 
     provider = cfg["tunnel"]["provider"]
-    tunnel_pid_file = "logs/tunnel_8080.pid"
+    tunnel_pid_file = f"logs/tunnel_{port}.pid"
     if os.path.exists(tunnel_pid_file):
         try:
             with open(tunnel_pid_file, "r") as f:
@@ -277,19 +278,22 @@ def main():
             pass
 
     if provider == "none" or not provider:
-        print("[start.py] Публичный туннель отключен (provider = none).")
-        public_url = "http://127.0.0.1:8080"
+        print(f"[start.py] Публичный туннель отключен для порта {port} (provider = none).")
+        public_url = f"http://127.0.0.1:{port}"
     else:
         cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain") or os.environ.get("CLOUDFLARE_TUNNEL_DOMAIN", "")
+        # Dynamically load the domain from secret like CLOUDFLARE_TUNNEL_DOMAIN_8083
+        domain_secret_key = f"CLOUDFLARE_TUNNEL_DOMAIN_{port}"
+        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain") or os.environ.get(domain_secret_key, "")
+        
         ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
         ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
         ngrok_token = os.environ.get(ngrok_token_env, "")
 
-        # Проксируем порт 8080 (API Gateway) вместо порта 12B/E2B напрямую
+        # Проксируем порт модели (8083 или 8084) напрямую для встроенного llama.cpp Web UI
         proc, public_url = start_tunnel(
             provider,
-            8080,
+            port,
             cloudflare_token=cloudflare_token,
             cloudflare_domain=cloudflare_domain,
             ngrok_domain=ngrok_domain,
@@ -299,8 +303,8 @@ def main():
             f.write(str(proc.pid))
 
         if not public_url:
-            public_url = f"http://127.0.0.1:8080"
-        print(f"[start.py] Публичный URL API Gateway: {public_url}")
+            public_url = f"http://127.0.0.1:{port}"
+        print(f"[start.py] Публичный URL модели (порт {port}): {public_url}")
 
         # Регистрация в Cloudflare KV
         register_with_cloudflare_worker(public_url, port, cfg)
