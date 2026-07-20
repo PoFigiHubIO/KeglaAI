@@ -179,306 +179,107 @@ def main():
     # Isolate Hugging Face cache on temporary directory (to avoid 20GB disk quota limit for FLUX/Wan)
     os.environ["HF_HOME"] = "/tmp/.cache"
 
-    public_url = ""
-
-    # =========================================================================
-    # ВЕТКА ДЛЯ ВТОРОЙ МОДЕЛИ (GPU 1, порт 8081) — МЕДИА-СЕРВЕР И БОТ
-    # =========================================================================
-    if port == 8081:
-        step("ЭТАП 6-8/9 — Запуск FastAPI Media Server (GPU 1)")
-        # Очищаем старый медиа-сервер и бот
-        os.system("pkill -f media_server.py")
-        os.system("pkill -f telegram_bot.py")
-        os.system("pkill -f failover_timer.py")
-
-        # Предварительная загрузка весов моделей в переднем плане для отображения прогресс-баров в Kaggle
-        print("\n" + "-" * 70)
-        print("[start.py] Предварительная загрузка весов моделей (FLUX и Wan)...")
-        print("[start.py] Это запустит скачивание с отображением интерактивного прогресс-бара.")
-        print("-" * 70)
+    # --- Этап 3: сборка llama.cpp ---
+    step("ЭТАП 3/9 — Сборка llama.cpp (CUDA)")
+    existing_binary = "./llama.cpp/build/bin/llama-server"
+    needs_build = True
+    if os.path.exists(existing_binary):
         try:
-            from huggingface_hub import snapshot_download
-            
-            # Скачиваем Z-Image-Turbo (вместо заблокированного FLUX)
-            print("\n[start.py] [1/3] Загрузка модели Tongyi-MAI/Z-Image-Turbo (для фото)...")
-            snapshot_download(
-                repo_id="Tongyi-MAI/Z-Image-Turbo",
-                resume_download=True
-            )
-            
-            # Скачиваем Wan2.1 Image-to-Video
-            print("\n[start.py] [2/3] Загрузка модели Wan-Video/Wan2.1-I2V-14B-480P (для видео)...")
-            snapshot_download(
-                repo_id="Wan-Video/Wan2.1-I2V-14B-480P",
-                resume_download=True
-            )
-
-            # Скачиваем Wan2.1 Text-to-Video
-            print("\n[start.py] [3/3] Загрузка модели Wan-Video/Wan2.1-T2V-1.3B (для видео из текста)...")
-            snapshot_download(
-                repo_id="Wan-Video/Wan2.1-T2V-1.3B",
-                resume_download=True
-            )
-            
-            # Скачиваем LoRA веса для Wan (Kijai/WanVideo_comfy)
-            print("\n[start.py] [доп] Загрузка LoRA-адаптеров Kijai/WanVideo_comfy для видео...")
-            snapshot_download(
-                repo_id="Kijai/WanVideo_comfy",
-                allow_patterns="Lightx2v/*",
-                resume_download=True
-            )
-            print("\n[start.py] ✅ Все модели медиа-сервера успешно загружены в кэш!")
-        except Exception as e:
-            print(f"\n[start.py][warn] Ошибка при предзагрузке моделей: {e}")
-            print("[start.py] Попробуем продолжить запуск, медиа-сервер скачает модели сам.")
-
-        log_f = open("logs/media_server_8081.log", "w")
-        media_proc = subprocess.Popen(
-            [sys.executable, "scripts/media_server.py"],
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            start_new_session=True
-        )
-        with open("logs/media_server_8081.pid", "w") as f:
-            f.write(str(media_proc.pid))
-        print(f"[start.py] Media Server запущен (PID={media_proc.pid})")
-        
-        # Ожидание готовности FastAPI Media Server
-        print("[start.py] Ожидание инициализации FastAPI Media Server...")
-        ready = False
-        for i in range(30):
-            if media_proc.poll() is not None:
-                print(f"[start.py][error] Процесс Media Server (PID={media_proc.pid}) аварийно завершился!")
-                break
-            try:
-                import urllib.request
-                import json
-                with urllib.request.urlopen("http://127.0.0.1:8081/health", timeout=2) as response:
-                    if response.status == 200:
-                        data = json.loads(response.read().decode())
-                        if data.get("status") == "ok":
-                            ready = True
-                            print("[start.py] ✅ FastAPI Media Server успешно запущен и слушает порт 8081!")
-                            break
-            except Exception:
-                pass
-            time.sleep(2)
-
-        if not ready:
-            print("[start.py][error] Media Server не ответил на /health. Логи запуска:")
-            if os.path.exists("logs/media_server_8081.log"):
-                with open("logs/media_server_8081.log", "r") as lf:
-                    for line in lf.readlines()[-40:]:
-                        print(line, end="")
-            sys.exit(1)
-
-        # Запускаем туннель для порта 8081
-        step("ЭТАП 7/9 — Публикация через туннель")
-        from tunnel import start_tunnel
-        provider = cfg["tunnel"]["provider"]
-        
-        tunnel_pid_file = f"logs/tunnel_{port}.pid"
-        cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
-        ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
-        ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
-        ngrok_token = os.environ.get(ngrok_token_env, "")
-
-        proc, public_url = start_tunnel(
-            provider,
-            port,
-            cloudflare_token=cloudflare_token,
-            cloudflare_domain=cloudflare_domain,
-            ngrok_domain=ngrok_domain,
-            ngrok_token=ngrok_token
-        )
-        with open(tunnel_pid_file, "w") as f:
-            f.write(str(proc.pid))
-
-        if not public_url:
-            public_url = f"http://127.0.0.1:{port}"
-        print(f"[start.py] Публичный URL медиа-сервера: {public_url}")
-
-        # Регистрация в Cloudflare KV
-        register_with_cloudflare_worker(public_url, port, cfg)
-
-        # Запуск Telegram Bot
-        step("ЭТАП 8/9 — Запуск Telegram Bot Agent Loop")
-        bot_log = open("logs/telegram_bot.log", "w")
-        bot_proc = subprocess.Popen(
-            [sys.executable, "scripts/telegram_bot.py"],
-            stdout=bot_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True
-        )
-        with open("logs/telegram_bot.pid", "w") as f:
-            f.write(str(bot_proc.pid))
-        print(f"[start.py] Telegram Bot запущен (PID={bot_proc.pid})")
-        
-        time.sleep(5)
-        if bot_proc.poll() is not None:
-            print("[start.py][error] Telegram Bot завершился с ошибкой!")
-            if os.path.exists("logs/telegram_bot.log"):
-                with open("logs/telegram_bot.log", "r") as lf:
-                    for line in lf.readlines()[-40:]:
-                        print(f"[bot] {line.strip()}")
-            sys.exit(1)
-        else:
-            print("[start.py] ✅ Telegram Bot успешно работает в фоне.")
-
-        # Запуск таймера авто-переключения (failover)
-        step("ЭТАП 8.5/9 — Запуск таймера авто-ротации (9h)")
-        timer_log = open("logs/failover_timer.log", "w")
-        timer_proc = subprocess.Popen(
-            [sys.executable, "scripts/failover_timer.py"],
-            stdout=timer_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True
-        )
-        with open("logs/failover_timer.pid", "w") as f:
-            f.write(str(timer_proc.pid))
-        print(f"[start.py] Таймер авто-ротации запущен (PID={timer_proc.pid})")
-
-        # Так как оба GPU 0 и GPU 1 запущены и настроены, инициируем сигнал передачи управления старой ноде
-        step("ЭТАП 8.9/9 — Сигнал передачи управления (Handover)")
-        trigger_handover(cfg)
-
-        # Тестовый прогрев и запуск генератора картинок (Z-Image-Turbo)
-        print("\n" + "-" * 70)
-        print("[start.py] Тест генератора изображений (Z-Image-Turbo) для прогрева VRAM и кэша...")
-        print("[start.py] (При первом запуске это инициализирует модель)")
-        print("[start.py] Логи инициализации:")
-        print("-" * 70)
-
-        import threading
-        stop_tail = False
-        def tail_logs():
-            try:
-                with open("logs/media_server_8081.log", "r") as lf:
-                    lf.seek(0, 2)
-                    while not stop_tail:
-                        line = lf.readline()
-                        if line:
-                            print(f"[media] {line.strip()}")
-                        else:
-                            time.sleep(0.5)
-            except Exception:
-                pass
-
-        tail_thread = threading.Thread(target=tail_logs, daemon=True)
-        tail_thread.start()
-
-        import urllib.request
-        import json
-        req_data = json.dumps({
-            "prompt": "Test: red sphere on table",
-            "width": 256,
-            "height": 256,
-            "steps": 1,
-            "guidance_scale": 1.0,
-            "seed": 42
-        }).encode("utf-8")
+            os.chmod(existing_binary, 0o755)
+        except OSError as e:
+            print(f"[start.py][warn] Не удалось выставить права на {existing_binary}: {e}")
 
         try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:8081/api/generate_image",
-                data=req_data,
-                headers={"Content-Type": "application/json"},
-                method="POST"
+            check = subprocess.run(
+                [existing_binary, "--version"], capture_output=True, timeout=30
             )
-            # 10 minutes timeout for model download
-            with urllib.request.urlopen(req, timeout=600) as response:
-                if response.status == 200:
-                    res_json = json.loads(response.read().decode())
-                    print("[start.py] ✅ Тестовая генерация на GPU 1 завершена успешно!")
-                    if "image_base64" in res_json:
-                        print(f"[start.py] Изображение сгенерировано (Base64 длина: {len(res_json['image_base64'])})")
-                else:
-                    print(f"[start.py][error] Тест генерации вернул статус: {response.status}")
-        except Exception as e:
-            print(f"[start.py][error] Ошибка при тестировании генерации: {e}")
-        finally:
-            stop_tail = True
+            binary_ok = check.returncode == 0
+        except (PermissionError, OSError) as e:
+            binary_ok = False
 
-    # =========================================================================
-    # ВЕТКА ДЛЯ ПЕРВОЙ МОДЕЛИ (GPU 0, порт 8080) — LLM API
-    # =========================================================================
+        if binary_ok:
+            print("[start.py] Восстановленная сборка рабочая! Полная компиляция пропущена.")
+            needs_build = False
+
+    if needs_build:
+        run(["bash", "build.sh"])
+
+    # --- Этап 4: загрузка GGUF-модели ---
+    step("ЭТАП 4/9 — Загрузка GGUF-модели")
+    run([sys.executable, "download_model.py"])
+
+    # --- Этап 5: автоподбор параметров ---
+    step("ЭТАП 5/9 — Автоподбор параметров запуска")
+    run([sys.executable, "scripts/optimize.py"])
+
+    # --- Этап 6-8: запуск сервера (API + Web UI) ---
+    step("ЭТАП 6-8/9 — Запуск llama-server (OpenAI API + Web UI)")
+    run(["bash", "start_server.sh"])
+
+    # --- Этап 7: публичный туннель ---
+    step("ЭТАП 7/9 — Публикация через туннель")
+    from tunnel import start_tunnel
+
+    provider = cfg["tunnel"]["provider"]
+    tunnel_pid_file = f"logs/tunnel_{port}.pid"
+    if os.path.exists(tunnel_pid_file):
+        try:
+            with open(tunnel_pid_file, "r") as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 15)
+            time.sleep(1)
+        except Exception:
+            pass
+
+    cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+    cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
+    ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
+    ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
+    ngrok_token = os.environ.get(ngrok_token_env, "")
+
+    proc, public_url = start_tunnel(
+        provider,
+        port,
+        cloudflare_token=cloudflare_token,
+        cloudflare_domain=cloudflare_domain,
+        ngrok_domain=ngrok_domain,
+        ngrok_token=ngrok_token
+    )
+    with open(tunnel_pid_file, "w") as f:
+        f.write(str(proc.pid))
+
+    if not public_url:
+        public_url = f"http://127.0.0.1:{port}"
+    print(f"[start.py] Публичный URL LLM: {public_url}")
+
+    # Регистрация в Cloudflare KV
+    register_with_cloudflare_worker(public_url, port, cfg)
+
+    # --- Запуск Telegram Bot ---
+    step("ЭТАП 8/9 — Запуск Telegram Bot Agent Loop")
+    # Clean up old bot instance
+    os.system("pkill -f telegram_bot.py")
+    bot_log = open("logs/telegram_bot.log", "w")
+    bot_proc = subprocess.Popen(
+        [sys.executable, "scripts/telegram_bot.py"],
+        stdout=bot_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True
+    )
+    with open("logs/telegram_bot.pid", "w") as f:
+        f.write(str(bot_proc.pid))
+    print(f"[start.py] Telegram Bot запущен (PID={bot_proc.pid})")
+    
+    time.sleep(5)
+    if bot_proc.poll() is not None:
+        print("[start.py][error] Telegram Bot завершился с ошибкой!")
+        if os.path.exists("logs/telegram_bot.log"):
+            with open("logs/telegram_bot.log", "r") as lf:
+                for line in lf.readlines()[-40:]:
+                    print(f"[bot] {line.strip()}")
+        sys.exit(1)
     else:
-        # --- Этап 3: сборка llama.cpp ---
-        step("ЭТАП 3/9 — Сборка llama.cpp (CUDA)")
-        existing_binary = "./llama.cpp/build/bin/llama-server"
-        needs_build = True
-        if os.path.exists(existing_binary):
-            try:
-                os.chmod(existing_binary, 0o755)
-            except OSError as e:
-                print(f"[start.py][warn] Не удалось выставить права на {existing_binary}: {e}")
-
-            try:
-                check = subprocess.run(
-                    [existing_binary, "--version"], capture_output=True, timeout=30
-                )
-                binary_ok = check.returncode == 0
-            except (PermissionError, OSError) as e:
-                binary_ok = False
-
-            if binary_ok:
-                needs_build = False
-                print(f"[start.py] {existing_binary} уже собран, пропускаем сборку.")
-        
-        if needs_build:
-            run(["bash", "build.sh"])
-
-        # --- Этап 4: загрузка модели ---
-        step("ЭТАП 4/9 — Загрузка GGUF-модели")
-        run([sys.executable, "download_model.py"])
-
-        # --- Этап 5: оптимальные параметры под 2xT4 ---
-        step("ЭТАП 5/9 — Автоподбор параметров запуска")
-        run([sys.executable, "scripts/optimize.py"])
-
-        # --- Этап 6-8: запуск сервера (API + Web UI) ---
-        step("ЭТАП 6-8/9 — Запуск llama-server (OpenAI API + Web UI)")
-        run(["bash", "start_server.sh"])
-
-        # --- Этап 7: публичный туннель ---
-        step("ЭТАП 7/9 — Публикация через туннель")
-        from tunnel import start_tunnel
-
-        provider = cfg["tunnel"]["provider"]
-        tunnel_pid_file = f"logs/tunnel_{port}.pid"
-        if os.path.exists(tunnel_pid_file):
-            try:
-                with open(tunnel_pid_file, "r") as f:
-                    old_pid = int(f.read().strip())
-                os.kill(old_pid, 15)
-                time.sleep(1)
-            except Exception:
-                pass
-
-        cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
-        ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
-        ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
-        ngrok_token = os.environ.get(ngrok_token_env, "")
-
-        proc, public_url = start_tunnel(
-            provider,
-            port,
-            cloudflare_token=cloudflare_token,
-            cloudflare_domain=cloudflare_domain,
-            ngrok_domain=ngrok_domain,
-            ngrok_token=ngrok_token
-        )
-        with open(tunnel_pid_file, "w") as f:
-            f.write(str(proc.pid))
-
-        if not public_url:
-            public_url = f"http://127.0.0.1:{port}"
-        print(f"[start.py] Публичный URL LLM: {public_url}")
-
-        # Регистрация в Cloudflare KV
-        register_with_cloudflare_worker(public_url, port, cfg)
+        print("[start.py] ✅ Telegram Bot успешно работает в фоне.")
 
     # --- Этап 9: генерация конфигов VS Code / MCP с подставленным URL ---
     step("ЭТАП 9/9 — Генерация конфигов для VS Code")

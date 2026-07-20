@@ -50,15 +50,13 @@ log = logging.getLogger("telegram_bot")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 LLM_API_URL = os.environ.get("LLM_API_URL", "http://127.0.0.1:8080/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-no-key-required")
-MEDIA_SERVER_URL = os.environ.get("MEDIA_SERVER_URL", "http://127.0.0.1:8081")
+MEDIA_SERVER_URL = ""
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
 MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "40"))
 
 SYSTEM_PROMPT = os.environ.get("BOT_SYSTEM_PROMPT", (
     "Ты — продвинутый AI-ассистент с доступом к инструментам.\n"
-    "Ты умеешь генерировать изображения (generate_image) и видео (generate_video) через медиа-сервер,\n"
-    "читать файлы проекта, делать веб-запросы и управлять другими MCP-инструментами.\n"
-    "При выполнении генерации медиа, ты получишь метаданные с подтверждением отправки файла пользователю.\n"
+    "Ты умеешь читать файлы проекта, делать веб-запросы и управлять MCP-инструментами.\n"
     "Отвечай на русском языке. Используй инструменты, когда это уместно, не спрашивая разрешения."
 ))
 
@@ -646,7 +644,7 @@ async def run_bot():
             return
         await update.message.reply_text(
             f"Привет, {user.first_name}!\n\n"
-            "Я умный AI-ассистент на базе llama.cpp и Diffusers/Wan 2.1.\n"
+            "Я умный AI-ассистент на базе llama.cpp.\n"
             "Я поддерживаю динамическую установку инструментов (MCP) через чат.\n\n"
             "Доступные команды:\n"
             "/clear — очистить историю диалога\n"

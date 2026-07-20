@@ -111,10 +111,6 @@ fi
 log "Установка Python-зависимостей из requirements.txt..."
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
-if [[ -f "requirements_media.txt" ]]; then
-    log "Установка зависимостей медиа-сервера из requirements_media.txt..."
-    pip install -r requirements_media.txt -q
-fi
 
 log "Проверка/установка Node.js (нужен только для localtunnel, опционально)..."
 if ! command -v node &>/dev/null; then
