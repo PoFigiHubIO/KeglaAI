@@ -27,6 +27,17 @@ LOCALTUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9\-]+\.loca\.lt")
 NGROK_API = "http://127.0.0.1:4040/api/tunnels"
 
 
+def _download_file(url: str, output_path: str):
+    import urllib.request
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    )
+    with urllib.request.urlopen(req) as response, open(output_path, "wb") as out_file:
+        out_file.write(response.read())
+
 def _ensure_cloudflared() -> str:
     """Скачивает статический бинарник cloudflared, если его ещё нет."""
     binary = "./bin/cloudflared"
@@ -36,7 +47,8 @@ def _ensure_cloudflared() -> str:
             "https://github.com/cloudflare/cloudflared/releases/latest/download/"
             "cloudflared-linux-amd64"
         )
-        subprocess.run(["wget", "-q", "-O", binary, url], check=True)
+        print(f"[tunnel] Downloading cloudflared from {url}...")
+        _download_file(url, binary)
     os.chmod(binary, 0o755)
     return binary
 
@@ -48,7 +60,8 @@ def _ensure_ngrok() -> str:
         os.makedirs("./bin", exist_ok=True)
         url = "https://bin.equinox.io/c/bNyj1mQ2G8W/ngrok-v3-stable-linux-amd64.tgz"
         tar_path = "./bin/ngrok.tgz"
-        subprocess.run(["wget", "-q", "-O", tar_path, url], check=True)
+        print(f"[tunnel] Downloading ngrok from {url}...")
+        _download_file(url, tar_path)
         subprocess.run(["tar", "-xzf", tar_path, "-C", "./bin"], check=True)
         if os.path.exists(tar_path):
             os.remove(tar_path)
