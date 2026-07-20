@@ -46,7 +46,7 @@ server:
   cache_type_v: q8_0
   log_file: ./logs/llama-server_8084.log
 tunnel:
-  provider: ngrok
+  provider: cloudflare
   ngrok_token_env: NGROK_AUTHTOKEN
   ngrok_domain: '28dcb02c7bfa-1965096042333252791.ngrok-free.app'
   cloudflare_token: ''
