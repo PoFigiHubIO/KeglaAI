@@ -348,7 +348,10 @@ async def chat_completions(request: Request):
     current_messages = list(messages)
     
     # Inject tools to the request body if model supports it
+    # IMPORTANT: Always use stream=False for backend requests within the agent loop.
+    # The gateway generates its own streaming response for clients.
     body_with_tools = dict(body)
+    body_with_tools["stream"] = False  # Never stream from backend in agent loop
     if tools:
         body_with_tools["tools"] = tools
         body_with_tools["tool_choice"] = "auto"
