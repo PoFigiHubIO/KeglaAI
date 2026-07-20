@@ -142,7 +142,8 @@ def load_kaggle_secrets():
             "NGROK_AUTHTOKEN",
             "NGROK_AUTHTOKEN_2",
             "CLOUDFLARE_TUNNEL_DOMAIN_8083",
-            "CLOUDFLARE_TUNNEL_DOMAIN_8084"
+            "CLOUDFLARE_TUNNEL_DOMAIN_8084",
+            "CLOUDFLARE_TUNNEL_DOMAIN"
         ]:
             try:
                 val = user_secrets.get_secret(key)
@@ -267,47 +268,65 @@ def main():
     from tunnel import start_tunnel
 
     provider = cfg["tunnel"]["provider"]
-    tunnel_pid_file = f"logs/tunnel_{port}.pid"
-    if os.path.exists(tunnel_pid_file):
+    
+    # 1. Tunnel for the model (8083 or 8084)
+    model_pid_file = f"logs/tunnel_{port}.pid"
+    if os.path.exists(model_pid_file):
         try:
-            with open(tunnel_pid_file, "r") as f:
+            with open(model_pid_file, "r") as f:
                 old_pid = int(f.read().strip())
             os.kill(old_pid, 15)
             time.sleep(1)
         except Exception:
             pass
 
-    if provider == "none" or not provider:
-        print(f"[start.py] Публичный туннель отключен для порта {port} (provider = none).")
-        public_url = f"http://127.0.0.1:{port}"
-    else:
+    domain_secret_key = f"CLOUDFLARE_TUNNEL_DOMAIN_{port}"
+    model_domain = cfg["tunnel"].get("cloudflare_domain") or os.environ.get(domain_secret_key, "")
+    
+    if provider != "none" and provider and model_domain:
         cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-        # Dynamically load the domain from secret like CLOUDFLARE_TUNNEL_DOMAIN_8083
-        domain_secret_key = f"CLOUDFLARE_TUNNEL_DOMAIN_{port}"
-        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain") or os.environ.get(domain_secret_key, "")
-        
-        ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
-        ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
-        ngrok_token = os.environ.get(ngrok_token_env, "")
-
-        # Проксируем порт модели (8083 или 8084) напрямую для встроенного llama.cpp Web UI
+        print(f"[start.py] Запуск туннеля для модели на порт {port} ({model_domain})...")
         proc, public_url = start_tunnel(
             provider,
             port,
             cloudflare_token=cloudflare_token,
-            cloudflare_domain=cloudflare_domain,
-            ngrok_domain=ngrok_domain,
-            ngrok_token=ngrok_token
+            cloudflare_domain=model_domain
         )
-        with open(tunnel_pid_file, "w") as f:
+        with open(model_pid_file, "w") as f:
             f.write(str(proc.pid))
-
-        if not public_url:
-            public_url = f"http://127.0.0.1:{port}"
         print(f"[start.py] Публичный URL модели (порт {port}): {public_url}")
-
+        
         # Регистрация в Cloudflare KV
         register_with_cloudflare_worker(public_url, port, cfg)
+    else:
+        print(f"[start.py] Туннель для порта {port} пропущен (нет домена или отключен)")
+
+    # 2. Tunnel for the API Gateway (port 8080) for VS Code / API
+    gateway_pid_file = "logs/tunnel_8080.pid"
+    if os.path.exists(gateway_pid_file):
+        try:
+            with open(gateway_pid_file, "r") as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 15)
+            time.sleep(1)
+        except Exception:
+            pass
+
+    gateway_domain = os.environ.get("CLOUDFLARE_TUNNEL_DOMAIN", "")
+    if provider != "none" and provider and gateway_domain:
+        cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+        print(f"[start.py] Запуск туннеля для API Gateway на порт 8080 ({gateway_domain})...")
+        proc, gateway_public_url = start_tunnel(
+            provider,
+            8080,
+            cloudflare_token=cloudflare_token,
+            cloudflare_domain=gateway_domain
+        )
+        with open(gateway_pid_file, "w") as f:
+            f.write(str(proc.pid))
+        print(f"[start.py] Публичный URL API Gateway (порт 8080): {gateway_public_url}")
+    else:
+        print("[start.py] Туннель для API Gateway (порт 8080) пропущен (нет домена или отключен)")
 
     # --- Запуск Telegram Bot ---
     step("ЭТАП 9/9 — Запуск Telegram Bot Agent Loop")
