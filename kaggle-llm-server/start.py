@@ -140,7 +140,8 @@ def load_kaggle_secrets():
             "NEXT_KAGGLE_SLUG",
             "ROTATION_TIME_SECONDS",
             "NGROK_AUTHTOKEN",
-            "NGROK_AUTHTOKEN_2"
+            "NGROK_AUTHTOKEN_2",
+            "CLOUDFLARE_TUNNEL_DOMAIN"
         ]:
             try:
                 val = user_secrets.get_secret(key)
@@ -265,7 +266,7 @@ def main():
     from tunnel import start_tunnel
 
     provider = cfg["tunnel"]["provider"]
-    tunnel_pid_file = f"logs/tunnel_{port}.pid"
+    tunnel_pid_file = "logs/tunnel_8080.pid"
     if os.path.exists(tunnel_pid_file):
         try:
             with open(tunnel_pid_file, "r") as f:
@@ -275,23 +276,12 @@ def main():
         except Exception:
             pass
 
-    provider = cfg["tunnel"]["provider"]
     if provider == "none" or not provider:
         print("[start.py] Публичный туннель отключен (provider = none).")
         public_url = "http://127.0.0.1:8080"
     else:
-        tunnel_pid_file = f"logs/tunnel_{port}.pid"
-        if os.path.exists(tunnel_pid_file):
-            try:
-                with open(tunnel_pid_file, "r") as f:
-                    old_pid = int(f.read().strip())
-                os.kill(old_pid, 15)
-                time.sleep(1)
-            except Exception:
-                pass
-
         cloudflare_token = cfg["tunnel"].get("cloudflare_token") or os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
-        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain", "")
+        cloudflare_domain = cfg["tunnel"].get("cloudflare_domain") or os.environ.get("CLOUDFLARE_TUNNEL_DOMAIN", "")
         ngrok_domain = cfg["tunnel"].get("ngrok_domain", "")
         ngrok_token_env = cfg["tunnel"].get("ngrok_token_env", "NGROK_AUTHTOKEN")
         ngrok_token = os.environ.get(ngrok_token_env, "")
