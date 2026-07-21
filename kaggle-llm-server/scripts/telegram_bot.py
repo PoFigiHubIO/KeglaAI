@@ -9,6 +9,7 @@ Exposes a simple chat interface, handles message streaming, and uploads output f
 
 import asyncio
 import base64
+import html
 import io
 import json
 import logging
@@ -28,6 +29,64 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+def format_telegram_html(text: str, reasoning: str, show_thinking: bool) -> str:
+    parts = []
+    if show_thinking and reasoning:
+        # Escape HTML in reasoning content
+        escaped_reasoning = html.escape(reasoning.strip())
+        if escaped_reasoning:
+            # Wrap in collapsible blockquote
+            parts.append(f"<blockquote expandable>{escaped_reasoning}</blockquote>")
+            
+    # Escape HTML in main text
+    escaped_text = html.escape(text)
+    
+    # 1. Convert code blocks: ```lang ... ```
+    escaped_text = re.sub(
+        r'```(\w*)\n(.*?)```',
+        lambda m: f'<pre><code class="language-{m.group(1)}">{m.group(2)}</code></pre>',
+        escaped_text,
+        flags=re.DOTALL
+    )
+    
+    # 2. Convert inline code: `code`
+    escaped_text = re.sub(
+        r'`([^`\n]+)`',
+        r'<code>\1</code>',
+        escaped_text
+    )
+    
+    # 3. Convert bold: **text**
+    escaped_text = re.sub(
+        r'\*\*([^*]+)\*\*',
+        r'<b>\1</b>',
+        escaped_text
+    )
+    
+    # 4. Convert italics: *text* (avoiding bold fragments)
+    escaped_text = re.sub(
+        r'\*([^*]+)\*',
+        r'<i>\1</i>',
+        escaped_text
+    )
+    
+    # 5. Convert links: [text](url)
+    escaped_text = re.sub(
+        r'\[([^\]]+)\]\((https?://[^\)]+)\)',
+        r'<a href="\2">\1</a>',
+        escaped_text
+    )
+
+    # 6. Convert blockquotes: > text
+    escaped_text = re.sub(
+        r'(?:^|\n)&gt;\s*([^\n]+)',
+        r'\n<blockquote>\1</blockquote>',
+        escaped_text
+    )
+    
+    parts.append(escaped_text)
+    return "\n\n".join(parts)
 
 # Ensure project modules are importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -102,6 +161,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Доступные команды:\n"
         "/model 12b — переключить на Gemma-4-12B (GPU 0)\n"
         "/model e2b — переключить на Gemma-4-E2B (GPU 1)\n"
+        "/show_thinking — включить/выключить отображение хода рассуждений (Thinking)\n"
         "/clear — очистить историю диалога\n"
         "/status — проверить состояние бэкенда\n"
         "/help — показать эту справку",
@@ -160,6 +220,20 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+async def cmd_show_thinking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_user_allowed(update.effective_user.id):
+        return
+    chat_id = update.effective_chat.id
+    current = db.get_setting(f"show_thinking_{chat_id}", "true")
+    new_value = "false" if current == "true" else "true"
+    db.set_setting(f"show_thinking_{chat_id}", new_value)
+    
+    status = "включено" if new_value == "true" else "выключено"
+    await update.message.reply_text(
+        f"🧠 Отображение хода рассуждений модели (Thinking) теперь *{status}* для этого чата.",
+        parse_mode="Markdown"
+    )
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db.is_user_allowed(update.effective_user.id):
         await update.message.reply_text("Access denied.")
@@ -172,8 +246,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.effective_chat.send_action("typing")
 
-    # Get active model
+    # Get active model and settings
     model = db.get_setting(f"model_{chat_id}", "gemma-4-12b")
+    show_thinking_str = db.get_setting(f"show_thinking_{chat_id}", "true")
+    show_thinking = (show_thinking_str == "true")
     
     # Store user message
     db.add_message(chat_id, "user", user_text)
@@ -181,15 +257,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Retrieve history
     history = db.get_history(chat_id, limit=MAX_HISTORY_MESSAGES)
     
-    # Check if system prompt is present
+    # Prepend specialized Telegram formatting system instructions
     messages = []
-    if not history or history[0]["role"] != "system":
-        sys_prompt = "Ты — продвинутый ИИ-ассистент. Ты можешь запускать bash-команды, писать и изменять файлы проекта, а также администрировать этот сервер. Используй инструменты автономно."
-        messages.append({"role": "system", "content": sys_prompt})
-        
+    sys_prompt = (
+        "Ты — продвинутый ИИ-ассистент KeglaAI. Ты можешь запускать bash-команды, писать и изменять файлы проекта, "
+        "а также выполнять администрирование этого сервера. Используй инструменты автономно.\n\n"
+        "ВАЖНОЕ ТРЕБОВАНИЕ К ОФОРМЛЕНИЮ:\n"
+        "Поскольку ты общаешься через Telegram, форматируй свои ответы красиво и читаемо с помощью Markdown:\n"
+        "- Используй жирный шрифт (**текст**) для заголовков разделов, важных терминов и ключевых мыслей.\n"
+        "- Оформляй код в блоки кода с указанием языка (например, ```python ... ```).\n"
+        "- Размечай списки, важные перечисления и таблицы.\n"
+        "- Для обычных цитат используй блок цитирования (> текст).\n"
+        "- Пиши структурированно, разбивай текст на небольшие логичные абзацы."
+    )
+    messages.append({"role": "system", "content": sys_prompt})
+    
     for h in history:
-        # Ignore tool messages in base history if we restart loop cleanly
-        if h["role"] in ["user", "assistant", "system"]:
+        if h["role"] in ["user", "assistant"]:
             messages.append({"role": h["role"], "content": h["content"]})
 
     # Try using the new Telegram Bot API sendMessageDraft method (added March 2026)
@@ -219,6 +303,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("Thinking...")
     
     accumulated_text = ""
+    accumulated_reasoning = ""
     last_update_time = time.time()
     
     try:
@@ -254,12 +339,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             parsed = json.loads(data_str)
                             delta = parsed["choices"][0]["delta"]
+                            
+                            has_new_content = False
+                            if "reasoning_content" in delta and delta["reasoning_content"]:
+                                accumulated_reasoning += delta["reasoning_content"]
+                                has_new_content = True
                             if "content" in delta and delta["content"]:
                                 accumulated_text += delta["content"]
+                                has_new_content = True
+                                
+                            if has_new_content:
+                                preview = format_telegram_html(accumulated_text, accumulated_reasoning, show_thinking)
                                 
                                 if use_drafts:
-                                    # Draft updates have no rate limit in Telegram (updates every 100ms for smoothness)
-                                    if time.time() - last_update_time > 0.1:
+                                    # Draft updates have no rate limit in Telegram (updates every 150ms for smoothness)
+                                    if time.time() - last_update_time > 0.15:
                                         try:
                                             async with httpx.AsyncClient() as client:
                                                 await client.post(
@@ -267,7 +361,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                     json={
                                                         "chat_id": chat_id,
                                                         "draft_id": draft_id,
-                                                        "text": accumulated_text[:4000]
+                                                        "text": preview[:4000],
+                                                        "parse_mode": "HTML"
                                                     },
                                                     timeout=5.0
                                                 )
@@ -277,10 +372,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 else:
                                     # Fallback: Throttle Telegram message updates to avoid rate limits
                                     if time.time() - last_update_time > 1.5:
-                                        preview = accumulated_text[-4000:] if len(accumulated_text) > 4000 else accumulated_text
                                         if preview != last_sent_text:
                                             try:
-                                                await status_msg.edit_text(preview)
+                                                await status_msg.edit_text(preview, parse_mode="HTML")
                                                 last_sent_text = preview
                                             except Exception as telegram_err:
                                                 if "Message is not modified" not in str(telegram_err):
@@ -291,6 +385,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Final edit with complete response
         final_text = accumulated_text if accumulated_text else "(пустой ответ)"
+        final_html = format_telegram_html(final_text, accumulated_reasoning, show_thinking)
+        
         if use_drafts:
             # 1. Update final draft
             try:
@@ -300,7 +396,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         json={
                             "chat_id": chat_id,
                             "draft_id": draft_id,
-                            "text": final_text[:4000]
+                            "text": final_html[:4000],
+                            "parse_mode": "HTML"
                         },
                         timeout=5.0
                     )
@@ -308,28 +405,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             
             # 2. Publish final message (clears the draft automatically in Telegram UI)
-            if len(final_text) > 4000:
-                chunks = [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]
+            if len(final_html) > 4000:
+                chunks = [final_html[i:i+4000] for i in range(0, len(final_html), 4000)]
                 for chunk in chunks:
-                    await update.message.reply_text(chunk)
+                    await update.message.reply_text(chunk, parse_mode="HTML")
             else:
-                await update.message.reply_text(final_text)
+                await update.message.reply_text(final_html, parse_mode="HTML")
         else:
             # Fallback final message edit
-            if len(final_text) > 4000:
-                chunks = [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]
+            if len(final_html) > 4000:
+                chunks = [final_html[i:i+4000] for i in range(0, len(final_html), 4000)]
                 if chunks[0] != last_sent_text:
                     try:
-                        await status_msg.edit_text(chunks[0])
+                        await status_msg.edit_text(chunks[0], parse_mode="HTML")
                     except Exception as telegram_err:
                         if "Message is not modified" not in str(telegram_err):
                             raise telegram_err
                 for chunk in chunks[1:]:
-                    await update.message.reply_text(chunk)
+                    await update.message.reply_text(chunk, parse_mode="HTML")
             else:
-                if final_text != last_sent_text:
+                if final_html != last_sent_text:
                     try:
-                        await status_msg.edit_text(final_text)
+                        await status_msg.edit_text(final_html, parse_mode="HTML")
                     except Exception as telegram_err:
                         if "Message is not modified" not in str(telegram_err):
                             raise telegram_err
@@ -359,6 +456,7 @@ async def run_bot():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("model", cmd_model))
+    app.add_handler(CommandHandler("show_thinking", cmd_show_thinking))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("status", cmd_status))
 
@@ -368,6 +466,7 @@ async def run_bot():
         await app.bot.set_my_commands([
             BotCommand("start", "Показать приветствие"),
             BotCommand("model", "Выбрать модель (12b или e2b)"),
+            BotCommand("show_thinking", "Вкл/выкл отображение рассуждений"),
             BotCommand("clear", "Очистить историю диалога"),
             BotCommand("status", "Состояние кластера"),
         ])
