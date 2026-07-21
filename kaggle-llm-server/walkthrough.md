@@ -265,3 +265,26 @@ We finalized the integration logic:
 1. **Auto-Start Client Connection**: Enforced `auto_start=True` for the `media-server` connection inside **[scripts/bot_db.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/bot_db.py)**. If the database was pre-existing or restored from a backup with `auto_start=False`, the DB initializer runs an SQL update command on startup to force-correct it. This ensures that the Telegram Bot automatically establishes the SSE client connection to GPU 1 upon boot, exposing the tools `generate_image`, `generate_video`, and `load_style_lora`.
 2. **Local Loopback Communication**: Kept communication between GPU 0/Bot and GPU 1 local (`http://127.0.0.1:8081/sse`), bypassing external internet routing for lower latency.
 3. **Sequential Boot Sequence**: Configured the Jupyter notebook cells in **[kaggle_run_all.ipynb](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/notebooks/kaggle_run_all.ipynb)** to start GPU 0 (LLM) and wait for health confirmation before immediately launching GPU 1 (Media Server, Bot, and Failover Timer).
+
+---
+
+## 17. Dual-Tunnel Routing & OpenAI SSE Compliant Gateway
+
+### Problem Description
+The native `llama-server` Web UI is built for a single model and does not support model selection. Additionally, to use the API Gateway with IDE extensions like VS Code (e.g. OAI Compatible Copilot, Roo Code, Cline) without Cloudflare blocking the requests, the gateway must be exposed publicly via a stable endpoint, and its SSE stream responses must strictly adhere to the OpenAI streaming format (standard `id`, `object`, `created`, `model` fields in every chunk) to prevent client-side parsing failures.
+
+### Changes Made
+1. **Model Swap Across GPUs**:
+   - Swapped model definitions in **[config_gpu0.yaml](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/config_gpu0.yaml)** and **[config_gpu1.yaml](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/config_gpu1.yaml)**.
+   - GPU 0 (port `8083`) now runs the **Gemma-4-E2B** model.
+   - GPU 1 (port `8084`) now runs the **Gemma-4-12B** model.
+   - Updated the API Gateway ports in **[gateway.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/gateway.py)** to match (`PORT_E2B = 8083`, `PORT_12B = 8084`).
+2. **Concurrent Dual-Tunnel Architecture**:
+   - Refactored the tunnel startup process in **[start.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/start.py)**.
+   - Spawns a dedicated tunnel for each model port (`8083` or `8084`) using the port-specific secrets (`CLOUDFLARE_TUNNEL_DOMAIN_8083` and `CLOUDFLARE_TUNNEL_DOMAIN_8084`), mapping directly to the native `llama-server` Web UIs.
+   - Simultaneously spawns a main tunnel routing the local API Gateway (port `8080`) to the main domain `api.youngfreak.click` (loaded from `CLOUDFLARE_TUNNEL_DOMAIN`), enabling unified external API/VS Code client access.
+   - Segregated PID files (`logs/tunnel_8080.pid`, `logs/tunnel_8083.pid`, `logs/tunnel_8084.pid`) to avoid port conflicts and ensure concurrent execution.
+3. **OpenAI SSE Stream Compliance & Robustness**:
+   - Updated `chat_completions` in **[gateway.py](file:///d:/123VsakayaVsyachina/___LAB/AI_WEB/_RestrictAI/Kaggle/KeglaAI/kaggle-llm-server/scripts/gateway.py)** to catch and handle all request parsing and connection exceptions, returning standard JSON error payloads instead of raising unhandled backend exceptions.
+   - Added standard OpenAI event stream fields (`id`, `object`, `created`, `model`) to all intermediate streaming chunks (including status logs during tool execution) to guarantee compatibility with strict parser extensions like VS Code OAI Compatible Copilot.
+   - Forced `stream=False` on the internal backend requests to `llama-server` within the agent loop, avoiding chunked encoding conflicts and fixing the Telegram bot `"incomplete chunked read"` error.
