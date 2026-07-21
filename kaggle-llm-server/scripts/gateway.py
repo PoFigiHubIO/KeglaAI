@@ -143,7 +143,18 @@ async def load_mcp_servers():
         for name, cfg in servers.items():
             cmd = cfg.get("command")
             args = cfg.get("args", [])
-            client = StdioMcpClient(name, cmd, args)
+            
+            # Resolve {PROJECT_ROOT} placeholders dynamically
+            resolved_args = []
+            for arg in args:
+                if arg == "{PROJECT_ROOT}":
+                    resolved_args.append(os.getcwd())
+                elif "{PROJECT_ROOT}" in arg:
+                    resolved_args.append(arg.replace("{PROJECT_ROOT}", os.getcwd()))
+                else:
+                    resolved_args.append(arg)
+                    
+            client = StdioMcpClient(name, cmd, resolved_args)
             await client.start()
             mcp_clients[name] = client
     except Exception as e:
@@ -408,8 +419,25 @@ async def chat_completions(request: Request):
                     if not tool_calls:
                         # Final response reached, yield text
                         if body.get("stream"):
-                            # Format as stream chunk
-                            chunk = {
+                            reasoning_content = message.get("reasoning_content", "")
+                            
+                            # 1. Send reasoning chunk if present
+                            if reasoning_content:
+                                chunk_reasoning = {
+                                    "id": f"chatcmpl-{uuid.uuid4()}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"reasoning_content": reasoning_content},
+                                        "finish_reason": None
+                                    }]
+                                }
+                                yield f"data: {json.dumps(chunk_reasoning)}\n\n"
+                            
+                            # 2. Send content chunk
+                            chunk_content = {
                                 "id": f"chatcmpl-{uuid.uuid4()}",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
@@ -420,7 +448,7 @@ async def chat_completions(request: Request):
                                     "finish_reason": "stop"
                                 }]
                             }
-                            yield f"data: {json.dumps(chunk)}\n\n"
+                            yield f"data: {json.dumps(chunk_content)}\n\n"
                             yield "data: [DONE]\n\n"
                         else:
                             yield json.dumps(res_data)

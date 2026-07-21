@@ -8,7 +8,7 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/kaggle/working"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "{PROJECT_ROOT}"],
       "description": "Доступ к файлам проекта (models/, logs/, конфиги) — чтение/запись."
     },
     "fetch": {
@@ -28,7 +28,7 @@
     },
     "shell": {
       "command": "python",
-      "args": ["scripts/mcp_shell.py"],
+      "args": ["{PROJECT_ROOT}/scripts/mcp_shell.py"],
       "description": "Доступ к терминалу (bash/cmd) сервера — запуск скриптов, компиляция и администрирование."
     }
   },
