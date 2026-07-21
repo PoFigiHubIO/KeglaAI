@@ -15,6 +15,8 @@ import os
 import subprocess
 import sys
 import time
+import sqlite3
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +32,58 @@ try:
     log.info(f"Loaded ROTATION_TIME_SECONDS from Kaggle Secrets: {ROTATION_TIME_SECONDS}s")
 except Exception:
     ROTATION_TIME_SECONDS = int(os.environ.get("ROTATION_TIME_SECONDS", str(8 * 3600 + 50 * 60)))
+
+
+def send_telegram_alert(text: str):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        if os.path.exists(".env"):
+            try:
+                with open(".env", "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("TELEGRAM_BOT_TOKEN="):
+                            token = line.split("=", 1)[1].strip()
+                            break
+            except Exception:
+                pass
+                        
+    if not token:
+        log.warning("No TELEGRAM_BOT_TOKEN found for failover alert.")
+        return
+
+    db_path = "./data/agent.db"
+    if not os.path.exists(db_path):
+        log.warning(f"Database {db_path} not found. Cannot fetch users to alert.")
+        return
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM allowed_users")
+        users = [row[0] for row in cursor.fetchall()]
+        conn.close()
+    except Exception as e:
+        log.error(f"Error reading allowed users from DB: {e}")
+        return
+
+    if not users:
+        log.info("No allowed users found to alert.")
+        return
+
+    for user_id in users:
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            resp = requests.post(url, json={
+                "chat_id": user_id,
+                "text": text,
+                "parse_mode": "Markdown"
+            }, timeout=10)
+            if resp.status_code == 200:
+                log.info(f"Sent failover alert to user {user_id}")
+            else:
+                log.warning(f"Failed to send alert to {user_id}: {resp.text}")
+        except Exception as e:
+            log.error(f"Failed to send telegram alert to {user_id}: {e}")
 
 
 async def trigger_next_node():
@@ -115,8 +169,23 @@ async def trigger_next_node():
 async def main():
     log.info(f"Failover timer active. Sleep duration: {ROTATION_TIME_SECONDS} seconds (~{ROTATION_TIME_SECONDS / 3600:.1f} hours).")
     
-    # Wait for the rotation time limit
-    await asyncio.sleep(ROTATION_TIME_SECONDS)
+    # 10 minutes warning alert (600 seconds)
+    alert_before_seconds = 600
+    
+    if ROTATION_TIME_SECONDS > alert_before_seconds:
+        sleep_first = ROTATION_TIME_SECONDS - alert_before_seconds
+        log.info(f"Sleeping for {sleep_first} seconds before sending rotation alert...")
+        await asyncio.sleep(sleep_first)
+        
+        log.info("Sending 10-minute warning alert to users...")
+        send_telegram_alert("⚠️ *Внимание:* через 10 минут начнется плановая ротация сессии Kaggle. Данные будут перенесены на следующую ноду автоматически.")
+        
+        log.info(f"Sleeping for the remaining {alert_before_seconds} seconds...")
+        await asyncio.sleep(alert_before_seconds)
+    else:
+        log.info(f"Rotation time is less than {alert_before_seconds}s. Sleeping for {ROTATION_TIME_SECONDS}s...")
+        await asyncio.sleep(ROTATION_TIME_SECONDS)
+        send_telegram_alert("⚠️ *Внимание:* начинается плановая ротация сессии Kaggle.")
     
     log.info("⏰ Sleep limit reached! Initiating failover handover...")
     

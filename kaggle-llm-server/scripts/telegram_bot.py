@@ -21,11 +21,12 @@ import httpx
 from pathlib import Path
 from typing import List
 
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -87,6 +88,112 @@ def format_telegram_html(text: str, reasoning: str, show_thinking: bool) -> str:
     
     parts.append(escaped_text)
     return "\n\n".join(parts)
+
+def convert_ogg_to_wav(ogg_path: str, wav_path: str) -> bool:
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", ogg_path, "-ac", "1", "-ar", "16000", wav_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return result.returncode == 0
+    except Exception as e:
+        log.error(f"Error converting OGG to WAV: {e}")
+        return False
+
+def transcribe_audio_file(wav_path: str) -> str:
+    try:
+        import speech_recognition as sr
+        r = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio = r.record(source)
+        return r.recognize_google(audio, language="ru-RU")
+    except Exception as e:
+        log.error(f"Error transcribing audio: {e}")
+        return f"[Ошибка распознавания речи: {e}]"
+
+async def cmd_mcp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_user_allowed(update.effective_user.id):
+        return
+    await send_mcp_dashboard(update.message.reply_text)
+
+async def send_mcp_dashboard(reply_func, message_to_edit=None):
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{GATEWAY_URL}/mcp/status")
+            if resp.status_code != 200:
+                await reply_func("Не удалось загрузить статус MCP-серверов со шлюза.")
+                return
+            servers = resp.json()
+    except Exception as e:
+        await reply_func(f"Ошибка подключения к шлюзу: {e}")
+        return
+
+    if not servers:
+        await reply_func("Нет настроенных MCP-серверов в системе.")
+        return
+
+    text = "🖥️ *Панель управления MCP-серверами:*\n\n"
+    keyboard = []
+    
+    for s in servers:
+        name = s["name"]
+        running = s["running"]
+        enabled = s["enabled"]
+        
+        status_emoji = "🟢" if (running and enabled) else "🔴"
+        status_text = "Активен" if (running and enabled) else "Выключен"
+        
+        text += f"{status_emoji} *{name}* — {status_text}\n"
+        if s["description"]:
+            text += f"   _Описание:_ {s['description']}\n"
+        if s["tools"]:
+            text += f"   _Инструменты:_ {', '.join(s['tools'])}\n"
+        text += "\n"
+        
+        btn_action = "Выключить" if enabled else "Включить"
+        keyboard.append([InlineKeyboardButton(f"{btn_action} {name}", callback_data=f"mcp_toggle:{name}")])
+        
+    keyboard.append([InlineKeyboardButton("🔄 Обновить список", callback_data="mcp_refresh")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if message_to_edit:
+        await message_to_edit.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await reply_func(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def handle_mcp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if not db.is_user_allowed(update.effective_user.id):
+        return
+        
+    data = query.data
+    if data == "mcp_refresh":
+        await send_mcp_dashboard(query.edit_message_text, query.message)
+        return
+        
+    if data.startswith("mcp_toggle:"):
+        server_name = data.split(":", 1)[1]
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{GATEWAY_URL}/mcp/toggle",
+                    json={"name": server_name}
+                )
+                if resp.status_code == 200:
+                    res_body = resp.json()
+                    alert_text = res_body.get("message", f"Переключен статус {server_name}")
+                else:
+                    alert_text = f"Ошибка шлюза: {resp.text}"
+        except Exception as e:
+            alert_text = f"Ошибка сети: {e}"
+            
+        await query.answer(text=alert_text, show_alert=True)
+        await send_mcp_dashboard(query.edit_message_text, query.message)
+
 
 # Ensure project modules are importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -234,48 +341,7 @@ async def cmd_show_thinking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not db.is_user_allowed(update.effective_user.id):
-        await update.message.reply_text("Access denied.")
-        return
-
-    user_text = update.message.text
-    if not user_text:
-        return
-
-    chat_id = update.effective_chat.id
-    await update.effective_chat.send_action("typing")
-
-    # Get active model and settings
-    model = db.get_setting(f"model_{chat_id}", "gemma-4-12b")
-    show_thinking_str = db.get_setting(f"show_thinking_{chat_id}", "true")
-    show_thinking = (show_thinking_str == "true")
-    
-    # Store user message
-    db.add_message(chat_id, "user", user_text)
-    
-    # Retrieve history
-    history = db.get_history(chat_id, limit=MAX_HISTORY_MESSAGES)
-    
-    # Prepend specialized Telegram formatting system instructions
-    messages = []
-    sys_prompt = (
-        "Ты — продвинутый ИИ-ассистент KeglaAI. Ты можешь запускать bash-команды, писать и изменять файлы проекта, "
-        "а также выполнять администрирование этого сервера. Используй инструменты автономно.\n\n"
-        "ВАЖНОЕ ТРЕБОВАНИЕ К ОФОРМЛЕНИЮ:\n"
-        "Поскольку ты общаешься через Telegram, форматируй свои ответы красиво и читаемо с помощью Markdown:\n"
-        "- Используй жирный шрифт (**текст**) для заголовков разделов, важных терминов и ключевых мыслей.\n"
-        "- Оформляй код в блоки кода с указанием языка (например, ```python ... ```).\n"
-        "- Размечай списки, важные перечисления и таблицы.\n"
-        "- Для обычных цитат используй блок цитирования (> текст).\n"
-        "- Пиши структурированно, разбивай текст на небольшие логичные абзацы."
-    )
-    messages.append({"role": "system", "content": sys_prompt})
-    
-    for h in history:
-        if h["role"] in ["user", "assistant"]:
-            messages.append({"role": h["role"], "content": h["content"]})
-
+async def run_chat_stream(update: Update, chat_id: int, model: str, messages: List[dict], show_thinking: bool):
     # Try using the new Telegram Bot API sendMessageDraft method (added March 2026)
     # If not supported, we fall back to standard message editing
     draft_id = int(time.time() * 1000) % 2147483647
@@ -438,12 +504,182 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await upload_generated_files(update, final_text)
         
     except Exception as e:
-        log.error(f"Error in handle_message: {e}", exc_info=True)
+        log.error(f"Error in run_chat_stream: {e}", exc_info=True)
         err_msg_text = f"Произошла ошибка: {str(e)[:200]}"
         if use_drafts:
             await update.message.reply_text(err_msg_text)
         else:
             await status_msg.edit_text(err_msg_text)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_user_allowed(update.effective_user.id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    user_text = update.message.text
+    if not user_text:
+        return
+
+    chat_id = update.effective_chat.id
+    await update.effective_chat.send_action("typing")
+
+    # Get active model and settings
+    model = db.get_setting(f"model_{chat_id}", "gemma-4-12b")
+    show_thinking_str = db.get_setting(f"show_thinking_{chat_id}", "true")
+    show_thinking = (show_thinking_str == "true")
+    
+    # Store user message
+    db.add_message(chat_id, "user", user_text)
+    
+    # Retrieve history
+    history = db.get_history(chat_id, limit=MAX_HISTORY_MESSAGES)
+    
+    # Prepend specialized Telegram formatting system instructions
+    messages = []
+    sys_prompt = (
+        "Ты — продвинутый ИИ-ассистент KeglaAI. Ты можешь запускать bash-команды, писать и изменять файлы проекта, "
+        "а также выполнять администрирование этого сервера. Используй инструменты автономно.\n\n"
+        "ВАЖНОЕ ТРЕБОВАНИЕ К ОФОРМЛЕНИЮ:\n"
+        "Поскольку ты общаешься через Telegram, форматируй свои ответы красиво и читаемо с помощью Markdown:\n"
+        "- Используй жирный шрифт (**текст**) для заголовков разделов, важных терминов и ключевых мыслей.\n"
+        "- Оформляй код в блоки кода с указанием языка (например, ```python ... ```).\n"
+        "- Размечай списки, важные перечисления и таблицы.\n"
+        "- Для обычных цитат используй блок цитирования (> текст).\n"
+        "- Пиши структурированно, разбивай текст на небольшие логичные абзацы."
+    )
+    messages.append({"role": "system", "content": sys_prompt})
+    
+    for h in history:
+        if h["role"] in ["user", "assistant"]:
+            messages.append({"role": h["role"], "content": h["content"]})
+
+    await run_chat_stream(update, chat_id, model, messages, show_thinking)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_user_allowed(update.effective_user.id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    chat_id = update.effective_chat.id
+    await update.effective_chat.send_action("typing")
+
+    caption = update.message.caption if update.message.caption else "Опиши это изображение"
+    
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        base64_image = base64.b64encode(photo_bytes).decode("utf-8")
+    except Exception as e:
+        await update.message.reply_text(f"Не удалось загрузить изображение: {e}")
+        return
+
+    model = db.get_setting(f"model_{chat_id}", "gemma-4-12b")
+    show_thinking_str = db.get_setting(f"show_thinking_{chat_id}", "true")
+    show_thinking = (show_thinking_str == "true")
+    
+    db.add_message(chat_id, "user", f"[Изображение] {caption}")
+    history = db.get_history(chat_id, limit=MAX_HISTORY_MESSAGES)
+    
+    messages = []
+    sys_prompt = (
+        "Ты — продвинутый ИИ-ассистент KeglaAI. Ты можешь запускать bash-команды, писать и изменять файлы проекта, "
+        "а также выполнять администрирование этого сервера. Используй инструменты автономно.\n\n"
+        "ВАЖНОЕ ТРЕБОВАНИЕ К ОФОРМЛЕНИЮ:\n"
+        "Поскольку ты общаешься через Telegram, форматируй свои ответы красиво и читаемо с помощью Markdown:\n"
+        "- Используй жирный шрифт (**текст**) для заголовков разделов, важных терминов и ключевых мыслей.\n"
+        "- Оформляй код в блоки кода с указанием языка (например, ```python ... ```).\n"
+        "- Размечай списки, важные перечисления и таблицы.\n"
+        "- Для обычных цитат используй блок цитирования (> текст).\n"
+        "- Пиши структурированно, разбивай текст на небольшие логичные абзацы."
+    )
+    messages.append({"role": "system", "content": sys_prompt})
+    
+    for h in history[:-1]:
+        if h["role"] in ["user", "assistant"]:
+            messages.append({"role": h["role"], "content": h["content"]})
+            
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": caption},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{base64_image}"
+                }
+            }
+        ]
+    })
+    
+    await run_chat_stream(update, chat_id, model, messages, show_thinking)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db.is_user_allowed(update.effective_user.id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    chat_id = update.effective_chat.id
+    await update.effective_chat.send_action("typing")
+
+    voice = update.message.voice
+    if not voice:
+        return
+
+    os.makedirs("./logs", exist_ok=True)
+    ogg_path = "./logs/voice_temp.ogg"
+    wav_path = "./logs/voice_temp.wav"
+    
+    try:
+        voice_file = await voice.get_file()
+        await voice_file.download_to_drive(ogg_path)
+        
+        if not convert_ogg_to_wav(ogg_path, wav_path):
+            await update.message.reply_text("Не удалось декодировать аудио-формат голосового сообщения.")
+            return
+            
+        transcribed_text = transcribe_audio_file(wav_path)
+        
+        # Cleanup
+        for p in [ogg_path, wav_path]:
+            if os.path.exists(p):
+                os.remove(p)
+                
+        if not transcribed_text or transcribed_text.startswith("["):
+            await update.message.reply_text(f"Голос не распознан: {transcribed_text}")
+            return
+            
+        await update.message.reply_text(f"🎤 *Вы сказали:* {transcribed_text}", parse_mode="Markdown")
+        
+        model = db.get_setting(f"model_{chat_id}", "gemma-4-12b")
+        show_thinking_str = db.get_setting(f"show_thinking_{chat_id}", "true")
+        show_thinking = (show_thinking_str == "true")
+        
+        db.add_message(chat_id, "user", transcribed_text)
+        history = db.get_history(chat_id, limit=MAX_HISTORY_MESSAGES)
+        
+        messages = []
+        sys_prompt = (
+            "Ты — продвинутый ИИ-ассистент KeglaAI. Ты можешь запускать bash-команды, писать и изменять файлы проекта, "
+            "а также выполнять администрирование этого сервера. Используй инструменты автономно.\n\n"
+            "ВАЖНОЕ ТРЕБОВАНИЕ К ОФОРМЛЕНИЮ:\n"
+            "Поскольку ты общаешься через Telegram, форматируй свои ответы красиво и читаемо с помощью Markdown:\n"
+            "- Используй жирный шрифт (**текст**) для заголовков разделов, важных терминов и ключевых мыслей.\n"
+            "- Оформляй код в блоки кода с указанием языка (например, ```python ... ```).\n"
+            "- Размечай списки, важные перечисления и таблицы.\n"
+            "- Для обычных цитат используй блок цитирования (> текст).\n"
+            "- Пиши структурированно, разбивай текст на небольшие логичные абзацы."
+        )
+        messages.append({"role": "system", "content": sys_prompt})
+        
+        for h in history:
+            if h["role"] in ["user", "assistant"]:
+                messages.append({"role": h["role"], "content": h["content"]})
+                
+        await run_chat_stream(update, chat_id, model, messages, show_thinking)
+        
+    except Exception as e:
+        log.error(f"Error handling voice message: {e}", exc_info=True)
+        await update.message.reply_text(f"Ошибка обработки голосового сообщения: {e}")
 
 async def run_bot():
     token = TELEGRAM_BOT_TOKEN
@@ -459,14 +695,19 @@ async def run_bot():
     app.add_handler(CommandHandler("show_thinking", cmd_show_thinking))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("mcp", cmd_mcp))
 
+    app.add_handler(CallbackQueryHandler(handle_mcp_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     try:
         await app.bot.set_my_commands([
             BotCommand("start", "Показать приветствие"),
             BotCommand("model", "Выбрать модель (12b или e2b)"),
             BotCommand("show_thinking", "Вкл/выкл отображение рассуждений"),
+            BotCommand("mcp", "Панель управления MCP-серверами"),
             BotCommand("clear", "Очистить историю диалога"),
             BotCommand("status", "Состояние кластера"),
         ])
@@ -478,7 +719,7 @@ async def run_bot():
         await app.start()
         await app.updater.start_polling(
             drop_pending_updates=True,
-            allowed_updates=["message"],
+            allowed_updates=["message", "callback_query"],
         )
         try:
             while True:

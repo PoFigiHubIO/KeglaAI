@@ -34,6 +34,122 @@ CONFIG_PATH = os.environ.get("CONFIG_FILE", "config.yaml")
 PORT_12B = 8084
 PORT_E2B = 8083
 
+async def sync_mcp_to_vscode(config: dict):
+    vscode_mcp_path = "vscode/cline_mcp_settings.json"
+    os.makedirs("vscode", exist_ok=True)
+    
+    mcp_servers = config.get("mcpServers", {})
+    cline_mcp = {"mcpServers": {}}
+    
+    for name, cfg in mcp_servers.items():
+        # Clean up local placeholders so they map correctly if the user wants to use them
+        args = cfg.get("args", [])
+        resolved_args = []
+        for arg in args:
+            if arg == "{PROJECT_ROOT}":
+                resolved_args.append(".")
+            elif "{PROJECT_ROOT}" in arg:
+                resolved_args.append(arg.replace("{PROJECT_ROOT}", "."))
+            else:
+                resolved_args.append(arg)
+                
+        cline_mcp["mcpServers"][name] = {
+            "command": cfg.get("command"),
+            "args": resolved_args,
+            "env": cfg.get("env", {}),
+            "disabled": not cfg.get("enabled", True),
+            "autoApprove": []
+        }
+        
+    try:
+        with open(vscode_mcp_path, "w", encoding="utf-8") as f:
+            json.dump(cline_mcp, f, indent=2, ensure_ascii=False)
+        log.info(f"Successfully synced MCP configs to {vscode_mcp_path}")
+    except Exception as e:
+        log.error(f"Failed to sync MCP configs to VS Code: {e}")
+
+def estimate_tokens(messages: List[dict]) -> int:
+    char_count = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            char_count += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    char_count += len(part.get("text", ""))
+    return char_count // 3
+
+async def prune_context_if_needed(messages: List[dict], model: str, backend_url: str) -> List[dict]:
+    # Gemma 4 context limit is 64000, let's assume limit is 32768 for safety margin
+    context_limit = 32768
+    estimated = estimate_tokens(messages)
+    
+    if estimated < int(context_limit * 0.85):
+        return messages
+        
+    log.info(f"Context threshold exceeded (estimated {estimated} / {context_limit} tokens). Compressing history...")
+    
+    system_msg = messages[0] if messages and messages[0]["role"] == "system" else None
+    
+    # We keep the last 6 messages intact
+    keep_last_n = 6
+    if len(messages) <= keep_last_n + 1:
+        return messages
+        
+    slice_start = 1 if system_msg else 0
+    slice_end = len(messages) - keep_last_n
+    
+    to_compress = messages[slice_start:slice_end]
+    keep_last = messages[slice_end:]
+    
+    history_text = ""
+    for msg in to_compress:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            history_text += f"{role.upper()}: {content}\n"
+            
+    summary_text = "[История сжата для экономии контекста]"
+    
+    try:
+        summary_payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system", 
+                    "content": (
+                        "Ты — архивариус. Твоя задача — сжать историю переписки пользователя и ИИ. "
+                        "Опиши кратко суть разговора, все важные факты, пути к файлам проекта, "
+                        "результаты выполненных команд и текущий статус разработки. Пиши только сухие факты, без вступлений."
+                    )
+                },
+                {"role": "user", "content": f"Вот история для сжатия:\n\n{history_text}"}
+            ],
+            "stream": False
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(backend_url, json=summary_payload)
+            if resp.status_code == 200:
+                res_data = resp.json()
+                summary_text = res_data["choices"][0]["message"].get("content", summary_text)
+                log.info("Successfully compressed conversation history.")
+            else:
+                log.error(f"Failed to compress history, status code: {resp.status_code}")
+    except Exception as e:
+        log.error(f"Error compressing history: {e}")
+        
+    new_messages = []
+    if system_msg:
+        new_messages.append(system_msg)
+        
+    new_messages.append({
+        "role": "system",
+        "content": f"Краткое содержание предыдущей части беседы:\n{summary_text}"
+    })
+    new_messages.extend(keep_last)
+    return new_messages
+
 # MCP Client Session class
 class StdioMcpClient:
     def __init__(self, name: str, command: str, args: List[str]):
@@ -141,6 +257,10 @@ async def load_mcp_servers():
             
         servers = config.get("mcpServers", {})
         for name, cfg in servers.items():
+            if cfg.get("enabled", True) is False:
+                log.info(f"MCP server '{name}' is disabled, skipping load.")
+                continue
+                
             cmd = cfg.get("command")
             args = cfg.get("args", [])
             
@@ -157,6 +277,9 @@ async def load_mcp_servers():
             client = StdioMcpClient(name, cmd, resolved_args)
             await client.start()
             mcp_clients[name] = client
+            
+        # Sync MCP configurations to VS Code settings files
+        await sync_mcp_to_vscode(config)
     except Exception as e:
         log.error(f"Error loading MCP servers: {e}", exc_info=True)
 
@@ -243,6 +366,7 @@ async def manage_mcp_server_tool(arguments: Dict[str, Any]) -> str:
         try:
             with open(mcp_config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            await sync_mcp_to_vscode(config)
         except Exception as e:
             return f"Ошибка записи конфигурации на диск: {e}"
             
@@ -266,6 +390,7 @@ async def manage_mcp_server_tool(arguments: Dict[str, Any]) -> str:
         try:
             with open(mcp_config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            await sync_mcp_to_vscode(config)
         except Exception as e:
             return f"Ошибка записи конфигурации на диск: {e}"
             
@@ -357,6 +482,13 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     
     backend_url = get_backend_url(model)
+    
+    # Prune context if threshold exceeded to prevent LLM errors
+    try:
+        messages = await prune_context_if_needed(messages, model, backend_url)
+    except Exception as prune_err:
+        log.error(f"Error during context pruning: {prune_err}")
+        
     tools = get_mcp_tools_list()
     
     # We execute the agent loop
@@ -544,6 +676,106 @@ async def chat_completions(request: Request):
         except Exception as e:
             log.error(f"Error in non-streaming response generation: {e}", exc_info=True)
             return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "internal_error"}})
+
+# ---------------------------------------------------------------------------
+# MCP Server Management REST endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/mcp/status")
+async def get_mcp_status():
+    mcp_config_path = "mcp/mcp_servers.json"
+    config = {"mcpServers": {}}
+    if os.path.exists(mcp_config_path):
+        try:
+            with open(mcp_config_path, "r", encoding="utf-8") as f:
+                lines = [l for l in f.readlines() if not l.strip().startswith("//")]
+                config = json.loads("".join(lines))
+        except Exception as e:
+            log.error(f"Error parsing mcp_servers.json: {e}")
+
+    servers_status = []
+    configured_servers = config.get("mcpServers", {})
+    
+    for name, cfg in configured_servers.items():
+        client = mcp_clients.get(name)
+        is_running = client is not None and client.proc is not None and client.proc.returncode is None
+        is_enabled = cfg.get("enabled", True)
+        
+        servers_status.append({
+            "name": name,
+            "enabled": is_enabled,
+            "running": is_running,
+            "description": cfg.get("description", ""),
+            "tools": [t["name"] for t in client.tools] if is_running else []
+        })
+    return JSONResponse(content=servers_status)
+
+@app.post("/v1/mcp/toggle")
+async def toggle_mcp_server(payload: Dict[str, Any]):
+    name = payload.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing 'name' in request body")
+        
+    mcp_config_path = "mcp/mcp_servers.json"
+    if not os.path.exists(mcp_config_path):
+        raise HTTPException(status_code=404, detail="mcp_servers.json not found")
+        
+    try:
+        with open(mcp_config_path, "r", encoding="utf-8") as f:
+            lines = [l for l in f.readlines() if not l.strip().startswith("//")]
+            config = json.loads("".join(lines))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading configuration: {e}")
+        
+    servers = config.get("mcpServers", {})
+    if name not in servers:
+        raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
+        
+    cfg = servers[name]
+    current_enabled = cfg.get("enabled", True)
+    new_enabled = not current_enabled
+    cfg["enabled"] = new_enabled
+    
+    # Save back to file
+    try:
+        with open(mcp_config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write configuration: {e}")
+        
+    # Start or stop the client process dynamically
+    if new_enabled:
+        # Start
+        cmd = cfg.get("command")
+        args = cfg.get("args", [])
+        
+        resolved_args = []
+        for arg in args:
+            if arg == "{PROJECT_ROOT}":
+                resolved_args.append(os.getcwd())
+            elif "{PROJECT_ROOT}" in arg:
+                resolved_args.append(arg.replace("{PROJECT_ROOT}", os.getcwd()))
+            else:
+                resolved_args.append(arg)
+                
+        client = StdioMcpClient(name, cmd, resolved_args)
+        await client.start()
+        mcp_clients[name] = client
+        status_msg = f"Started server '{name}'"
+    else:
+        # Stop
+        if name in mcp_clients:
+            await mcp_clients[name].stop()
+            mcp_clients.pop(name)
+        status_msg = f"Stopped server '{name}'"
+        
+    # Sync to VS Code config files
+    try:
+        await sync_mcp_to_vscode(config)
+    except Exception as vs_err:
+        log.error(f"Error syncing to VS Code configs: {vs_err}")
+        
+    return JSONResponse(content={"success": True, "enabled": new_enabled, "message": status_msg})
 
 # ---------------------------------------------------------------------------
 # HTML Web UI serving
