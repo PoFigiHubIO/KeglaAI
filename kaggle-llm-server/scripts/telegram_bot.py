@@ -192,8 +192,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if h["role"] in ["user", "assistant", "system"]:
             messages.append({"role": h["role"], "content": h["content"]})
 
-    # Prepare status placeholder message
-    status_msg = await update.message.reply_text("Thinking...")
+    # Try using the new Telegram Bot API sendMessageDraft method (added March 2026)
+    # If not supported, we fall back to standard message editing
+    draft_id = int(time.time() * 1000) % 2147483647
+    use_drafts = True
+    status_msg = None
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessageDraft",
+                json={
+                    "chat_id": chat_id,
+                    "draft_id": draft_id,
+                    "text": "Thinking..."
+                },
+                timeout=5.0
+            )
+            if resp.status_code != 200:
+                use_drafts = False
+    except Exception:
+        use_drafts = False
+
+    if not use_drafts:
+        # Fallback to creating a status message
+        status_msg = await update.message.reply_text("Thinking...")
     
     accumulated_text = ""
     last_update_time = time.time()
@@ -215,7 +238,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ) as response:
                 if response.status_code != 200:
                     err_body = await response.aread()
-                    await status_msg.edit_text(f"Ошибка API шлюза: {err_body.decode('utf-8')[:200]}")
+                    err_msg_text = f"Ошибка API шлюза: {err_body.decode('utf-8')[:200]}"
+                    if use_drafts:
+                        await update.message.reply_text(err_msg_text)
+                    else:
+                        await status_msg.edit_text(err_msg_text)
                     return
                     
                 last_sent_text = ""
@@ -230,40 +257,82 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             if "content" in delta and delta["content"]:
                                 accumulated_text += delta["content"]
                                 
-                                # Throttle Telegram message updates to avoid rate limits
-                                if time.time() - last_update_time > 1.5:
-                                    # Limit message length to Telegram limit
-                                    preview = accumulated_text[-4000:] if len(accumulated_text) > 4000 else accumulated_text
-                                    if preview != last_sent_text:
+                                if use_drafts:
+                                    # Draft updates have no rate limit in Telegram (updates every 100ms for smoothness)
+                                    if time.time() - last_update_time > 0.1:
                                         try:
-                                            await status_msg.edit_text(preview)
-                                            last_sent_text = preview
-                                        except Exception as telegram_err:
-                                            if "Message is not modified" not in str(telegram_err):
-                                                raise telegram_err
-                                        last_update_time = time.time()
+                                            async with httpx.AsyncClient() as client:
+                                                await client.post(
+                                                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessageDraft",
+                                                    json={
+                                                        "chat_id": chat_id,
+                                                        "draft_id": draft_id,
+                                                        "text": accumulated_text[:4000]
+                                                    },
+                                                    timeout=5.0
+                                                )
+                                            last_update_time = time.time()
+                                        except Exception:
+                                            pass
+                                else:
+                                    # Fallback: Throttle Telegram message updates to avoid rate limits
+                                    if time.time() - last_update_time > 1.5:
+                                        preview = accumulated_text[-4000:] if len(accumulated_text) > 4000 else accumulated_text
+                                        if preview != last_sent_text:
+                                            try:
+                                                await status_msg.edit_text(preview)
+                                                last_sent_text = preview
+                                            except Exception as telegram_err:
+                                                if "Message is not modified" not in str(telegram_err):
+                                                    raise telegram_err
+                                            last_update_time = time.time()
                         except Exception:
                             pass
 
         # Final edit with complete response
         final_text = accumulated_text if accumulated_text else "(пустой ответ)"
-        if len(final_text) > 4000:
-            chunks = [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]
-            if chunks[0] != last_sent_text:
-                try:
-                    await status_msg.edit_text(chunks[0])
-                except Exception as telegram_err:
-                    if "Message is not modified" not in str(telegram_err):
-                        raise telegram_err
-            for chunk in chunks[1:]:
-                await update.message.reply_text(chunk)
+        if use_drafts:
+            # 1. Update final draft
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessageDraft",
+                        json={
+                            "chat_id": chat_id,
+                            "draft_id": draft_id,
+                            "text": final_text[:4000]
+                        },
+                        timeout=5.0
+                    )
+            except Exception:
+                pass
+            
+            # 2. Publish final message (clears the draft automatically in Telegram UI)
+            if len(final_text) > 4000:
+                chunks = [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]
+                for chunk in chunks:
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text(final_text)
         else:
-            if final_text != last_sent_text:
-                try:
-                    await status_msg.edit_text(final_text)
-                except Exception as telegram_err:
-                    if "Message is not modified" not in str(telegram_err):
-                        raise telegram_err
+            # Fallback final message edit
+            if len(final_text) > 4000:
+                chunks = [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]
+                if chunks[0] != last_sent_text:
+                    try:
+                        await status_msg.edit_text(chunks[0])
+                    except Exception as telegram_err:
+                        if "Message is not modified" not in str(telegram_err):
+                            raise telegram_err
+                for chunk in chunks[1:]:
+                    await update.message.reply_text(chunk)
+            else:
+                if final_text != last_sent_text:
+                    try:
+                        await status_msg.edit_text(final_text)
+                    except Exception as telegram_err:
+                        if "Message is not modified" not in str(telegram_err):
+                            raise telegram_err
             
         # Store assistant response in DB
         db.add_message(chat_id, "assistant", final_text)
@@ -273,7 +342,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         log.error(f"Error in handle_message: {e}", exc_info=True)
-        await status_msg.edit_text(f"Произошла ошибка: {str(e)[:200]}")
+        err_msg_text = f"Произошла ошибка: {str(e)[:200]}"
+        if use_drafts:
+            await update.message.reply_text(err_msg_text)
+        else:
+            await status_msg.edit_text(err_msg_text)
 
 async def run_bot():
     token = TELEGRAM_BOT_TOKEN
