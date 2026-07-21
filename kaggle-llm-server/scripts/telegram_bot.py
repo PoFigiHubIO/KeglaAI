@@ -214,6 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await status_msg.edit_text(f"Ошибка API шлюза: {err_body.decode('utf-8')[:200]}")
                     return
                     
+                last_sent_text = ""
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
                         data_str = line[6:].strip()
@@ -229,8 +230,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 if time.time() - last_update_time > 1.5:
                                     # Limit message length to Telegram limit
                                     preview = accumulated_text[-4000:] if len(accumulated_text) > 4000 else accumulated_text
-                                    await status_msg.edit_text(preview)
-                                    last_update_time = time.time()
+                                    if preview != last_sent_text:
+                                        try:
+                                            await status_msg.edit_text(preview)
+                                            last_sent_text = preview
+                                        except Exception as telegram_err:
+                                            if "Message is not modified" not in str(telegram_err):
+                                                raise telegram_err
+                                        last_update_time = time.time()
                         except Exception:
                             pass
 
@@ -238,11 +245,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         final_text = accumulated_text if accumulated_text else "(пустой ответ)"
         if len(final_text) > 4000:
             chunks = [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]
-            await status_msg.edit_text(chunks[0])
+            if chunks[0] != last_sent_text:
+                try:
+                    await status_msg.edit_text(chunks[0])
+                except Exception as telegram_err:
+                    if "Message is not modified" not in str(telegram_err):
+                        raise telegram_err
             for chunk in chunks[1:]:
                 await update.message.reply_text(chunk)
         else:
-            await status_msg.edit_text(final_text)
+            if final_text != last_sent_text:
+                try:
+                    await status_msg.edit_text(final_text)
+                except Exception as telegram_err:
+                    if "Message is not modified" not in str(telegram_err):
+                        raise telegram_err
             
         # Store assistant response in DB
         db.add_message(chat_id, "assistant", final_text)
